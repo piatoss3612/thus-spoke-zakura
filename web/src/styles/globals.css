@@ -351,6 +351,13 @@
     color-scheme: light;
   }
 
+  @media (width < 48rem) {
+    html {
+      /* Keep keyboard-focused content above the fixed mobile navigation. */
+      scroll-padding-bottom: 4rem;
+    }
+  }
+
   [data-theme='dark'] {
     color-scheme: dark;
   }

@@ -1,5 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { ArrowRight } from 'lucide-react';
 import { Dialog } from '@/components/ui/Dialog';
@@ -8,8 +8,10 @@ import { Field } from '@/components/ui/Field';
 import { useToast } from '@/components/ui/toast-context';
 import { errorMessage, isPaymentRejection, type Account } from '@/lib/api';
 import { formatZec, formatZecAmount } from '@/lib/money';
-import { useSend, type PaymentResult, type SendVariables } from '@/hooks/mutations';
-import { paymentName, useRetainedPayments } from '@/hooks/payment-identity';
+import { type PaymentResult, type SendVariables } from '@/hooks/mutations';
+import { paymentName, type PaymentIdentity } from '@/hooks/payment-identity';
+import { isTerminalPayment, usePaymentStatus } from '@/hooks/queries';
+import { useWalletPayments } from './payment-context';
 import { useSendQuote } from '@/hooks/queries';
 import {
   MEMO_MAX_BYTES,
@@ -22,33 +24,52 @@ import { controlStyles } from '@/components/ui/control-styles';
 import { cn } from '@/lib/cn';
 import { SelectField } from './fields';
 import { POOL_OPTIONS, accountOptions } from './field-options';
-import { PaymentStatus, PaymentWarning } from './PaymentStatus';
+import { PaymentWarning } from './PaymentStatus';
 
 export function SendDialog({
   open,
   onOpenChange,
   accounts,
   defaultAccountId,
+  draft,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   accounts: Account[];
   defaultAccountId?: number;
+  draft?: PaymentIdentity | undefined;
 }) {
   const toast = useToast();
-  const send = useSend();
-  const payments = useRetainedPayments('send', open);
-  const fromAccountId = defaultAccountId ?? 1;
+  const {
+    send,
+    savedSend: payments,
+    send: sendOperation,
+    faucet: faucetOperation,
+  } = useWalletPayments();
+  const busy = sendOperation.isPending || faucetOperation.isPending;
+  const mounted = useRef(true);
+  const [submittedHere, setSubmittedHere] = useState(false);
+  const [receipt, setReceipt] = useState<{ text: string; kind: 'accepted' | 'error' } | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const previous = draft?.kind === 'send' ? draft.variables : undefined;
+  const fromAccountId = previous?.from_account ?? defaultAccountId ?? 1;
 
   const form = useForm<SendInput, unknown, SendValues>({
     resolver: zodResolver(sendSchema),
     defaultValues: {
       from_account: String(fromAccountId),
-      to_account: String(accounts.find((account) => account.id !== fromAccountId)?.id ?? 1),
-      source_pool: 'ironwood',
-      destination_pool: 'ironwood',
-      amount: '1',
-      memo: '',
+      to_account: String(
+        previous?.to_account ?? accounts.find((account) => account.id !== fromAccountId)?.id ?? 1,
+      ),
+      source_pool: previous?.source_pool ?? 'ironwood',
+      destination_pool: previous?.destination_pool ?? 'ironwood',
+      amount: previous ? formatZec(previous.amount_zatoshi, { grouping: false }) : '1',
+      memo: previous?.memo ?? '',
     },
   });
 
@@ -61,11 +82,14 @@ export function SendDialog({
     amount_zatoshi: values.amount,
     ...(values.memo === '' ? {} : { memo: values.memo }),
   });
-  const retryLabel =
-    current.success &&
-    payments.retained.some((item) => item.name === paymentName('send', variablesFor(current.data)))
-      ? `Retry ${formatZecAmount(current.data.amount)} to Account ${current.data.to_account}`
-      : null;
+  const match = current.success
+    ? payments.retained.find(
+        (item) => item.name === paymentName('send', variablesFor(current.data)),
+      )
+    : undefined;
+  const matchStatus = usePaymentStatus(match?.key ?? '', Boolean(match));
+  const matchTerminal = isTerminalPayment(matchStatus.data);
+  const retryLabel = match && !matchTerminal ? `Resume payment` : null;
   const announce = ({ activity, key }: PaymentResult) => {
     if (!send.claimAnnouncement(key)) return;
     toast.success(
@@ -73,9 +97,10 @@ export function SendDialog({
       `${formatZecAmount(activity.amount_zatoshi)} confirmed.`,
     );
   };
-  const failed = (error: Error, variables: SendVariables) => {
+  const failed = (error: Error) => {
+    if (!mounted.current) return;
+    setReceipt({ text: errorMessage(error), kind: 'error' });
     if (isPaymentRejection(error)) {
-      payments.dismiss(paymentName('send', variables));
       toast.error('Payment rejected', errorMessage(error));
     } else {
       toast.error('Payment not confirmed', errorMessage(error));
@@ -86,23 +111,29 @@ export function SendDialog({
   const submitted = {
     onError: failed,
     onSuccess: (result: PaymentResult, variables: SendVariables) => {
-      if (result.activity.status !== 'confirmed') return;
-      announce(result);
+      if (!mounted.current) return;
+      if (result.activity.status === 'confirmed') announce(result);
+      if (result.activity.status === 'failed') {
+        setReceipt({
+          text: `Payment failed: ${result.activity.last_error ?? 'The server rejected this payment.'}`,
+          kind: 'error',
+        });
+        return;
+      }
       if (result.cleanupError) return;
       const draft = sendSchema.safeParse(form.getValues());
       if (
         !draft.success ||
         paymentName('send', variablesFor(draft.data)) !== paymentName('send', variables)
-      )
+      ) {
+        setReceipt({
+          text: `Payment ${result.activity.status === 'confirmed' ? 'confirmed' : 'accepted'}. Your draft is unchanged. View status in Payments.`,
+          kind: 'accepted',
+        });
         return;
+      }
       onOpenChange(false);
       form.reset();
-    },
-  };
-  const resumed = {
-    onError: failed,
-    onSuccess: (result: PaymentResult) => {
-      if (result.activity.status === 'confirmed') announce(result);
     },
   };
 
@@ -136,9 +167,12 @@ export function SendDialog({
     destination_pool: destinationPool,
   });
 
-  const submit = form.handleSubmit(async (values) => {
+  const submit = async (values: SendValues) => {
     // Replaying retained work must not depend on the account's current balance
     // or a new proposal; it may already have spent those funds.
+    if (busy || matchTerminal) return;
+    setSubmittedHere(true);
+    setReceipt(null);
     const variables = variablesFor(values);
     const retained = payments.retained.find((item) => item.name === paymentName('send', variables));
     if (retained) {
@@ -160,7 +194,7 @@ export function SendDialog({
     }
 
     send.mutate(variables, submitted);
-  });
+  };
 
   const options = accountOptions(accounts);
 
@@ -170,25 +204,33 @@ export function SendDialog({
       onOpenChange={onOpenChange}
       eyebrow="NEW TRANSACTION"
       title="Send ZEC"
-      description="Moves existing funds between development accounts or pools. One block is mined to confirm."
+      description="Moves existing funds between development accounts or pools."
     >
-      {open &&
-        payments.displayed.map((identity) => (
-          <PaymentStatus
-            key={identity.key}
-            identity={identity}
-            pendingName={send.pendingName}
-            claimAnnouncement={send.claimAnnouncement}
-            onTerminal={send.clear}
-            onResume={(item) => send.resume(item, resumed)}
-          />
-        ))}
       {payments.error && (
         <PaymentWarning role="alert" className="mb-3">
-          <p>Could not read saved payments: {errorMessage(payments.error)}</p>
+          <p>Could not load saved payments: {errorMessage(payments.error)}</p>
+          <p>Allow site storage and reload before submitting.</p>
         </PaymentWarning>
       )}
-      <form onSubmit={(event) => void submit(event)} noValidate>
+      {receipt &&
+        (receipt.kind === 'accepted' ? (
+          <p role="status" className="text-ink-muted mb-3 text-[12px]">
+            {receipt.text}
+          </p>
+        ) : (
+          <PaymentWarning role="alert" className="mb-3">
+            <p>{receipt.text}</p>
+            <p>The payment updates section shows any saved request.</p>
+          </PaymentWarning>
+        ))}
+      {match && (
+        <p className="text-ink-muted mb-3 text-[12px]" role="status">
+          {matchTerminal
+            ? 'Previous payment finished. Clear its saved request in Payments before sending these details again.'
+            : `A saved payment has these details (${matchStatus.data?.status ?? 'status unknown'}). Resume it, or change the details for a new payment.`}
+        </p>
+      )}
+      <form onSubmit={(event) => void form.handleSubmit(submit)(event)} noValidate>
         <div className="grid gap-x-3 sm:grid-cols-2">
           <SelectField
             control={form.control}
@@ -281,8 +323,18 @@ export function SendDialog({
           )}
         </Field>
 
-        <Button type="submit" variant="primary" size="block" loading={send.isPending}>
-          {send.isPending ? 'Submitting…' : (retryLabel ?? 'Send ZEC')}
+        <Button
+          type="submit"
+          variant="primary"
+          size="block"
+          loading={busy}
+          disabled={busy || matchTerminal || Boolean(payments.error)}
+        >
+          {busy
+            ? send.isPending && submittedHere
+              ? 'Submitting payment…'
+              : 'Another payment is submitting…'
+            : (retryLabel ?? 'Send ZEC')}
           {!send.isPending && <ArrowRight />}
         </Button>
       </form>

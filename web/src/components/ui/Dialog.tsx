@@ -18,7 +18,7 @@ export function Dialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  eyebrow: string;
+  eyebrow?: string;
   title: string;
   description?: string;
   children: ReactNode;
@@ -58,9 +58,11 @@ export function Dialog({
             </RadixDialog.Close>
           </div>
           <div className="p-5">
-            <span className="text-accent mb-1 block font-mono text-[11px] font-medium tracking-[0.13em]">
-              {eyebrow}
-            </span>
+            {eyebrow && (
+              <span className="text-accent mb-1 block font-mono text-[11px] font-medium tracking-[0.13em]">
+                {eyebrow}
+              </span>
+            )}
             {description ? (
               <RadixDialog.Description className="text-ink-muted mb-5 text-[12px]">
                 {description}
