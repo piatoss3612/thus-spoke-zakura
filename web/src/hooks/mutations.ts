@@ -177,26 +177,10 @@ function usePaymentMutation<T extends SendVariables | FaucetVariables>(
   };
 }
 
-export function useSend(): UseMutationResult<Activity, Error, SendVariables> {
-  const invalidate = useInvalidateWallet();
-  const operation = operationKey('send', (variables: SendVariables) =>
-    JSON.stringify([
-      variables.from_account,
-      variables.to_account,
-      variables.source_pool,
-      variables.destination_pool,
-      variables.amount_zatoshi.toString(),
-      variables.memo ?? null,
-    ]),
+export function useSend() {
+  return usePaymentMutation('send', (variables: SendVariables, key) =>
+    api.send({ ...variables, idempotency_key: key }),
   );
-  return useMutation({
-    mutationFn: (variables: SendVariables) =>
-      api.send({ ...variables, idempotency_key: operation.keyFor(variables) }),
-    onSuccess: async (_activity, variables) => {
-      operation.clear(variables);
-      await invalidate();
-    },
-  });
 }
 
 export function useFaucet() {

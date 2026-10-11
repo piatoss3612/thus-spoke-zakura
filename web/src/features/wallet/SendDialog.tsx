@@ -6,9 +6,10 @@ import { Dialog } from '@/components/ui/Dialog';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import { useToast } from '@/components/ui/toast-context';
-import { errorMessage, type Account } from '@/lib/api';
+import { errorMessage, isPaymentRejection, type Account } from '@/lib/api';
 import { formatZec, formatZecAmount } from '@/lib/money';
-import { useSend } from '@/hooks/mutations';
+import { useSend, type PaymentResult, type SendVariables } from '@/hooks/mutations';
+import { paymentName, useRetainedPayments } from '@/hooks/payment-identity';
 import { useSendQuote } from '@/hooks/queries';
 import {
   MEMO_MAX_BYTES,
@@ -21,6 +22,7 @@ import { controlStyles } from '@/components/ui/control-styles';
 import { cn } from '@/lib/cn';
 import { SelectField } from './fields';
 import { POOL_OPTIONS, accountOptions } from './field-options';
+import { PaymentStatus, PaymentWarning } from './PaymentStatus';
 
 export function SendDialog({
   open,
@@ -35,6 +37,7 @@ export function SendDialog({
 }) {
   const toast = useToast();
   const send = useSend();
+  const payments = useRetainedPayments('send', open);
   const fromAccountId = defaultAccountId ?? 1;
 
   const form = useForm<SendInput, unknown, SendValues>({
@@ -48,6 +51,60 @@ export function SendDialog({
       memo: '',
     },
   });
+
+  const current = sendSchema.safeParse(useWatch({ control: form.control }));
+  const variablesFor = (values: SendValues) => ({
+    from_account: values.from_account,
+    to_account: values.to_account,
+    source_pool: values.source_pool,
+    destination_pool: values.destination_pool,
+    amount_zatoshi: values.amount,
+    ...(values.memo === '' ? {} : { memo: values.memo }),
+  });
+  const retryLabel =
+    current.success &&
+    payments.retained.some((item) => item.name === paymentName('send', variablesFor(current.data)))
+      ? `Retry ${formatZecAmount(current.data.amount)} to Account ${current.data.to_account}`
+      : null;
+  const announce = ({ activity, key }: PaymentResult) => {
+    if (!send.claimAnnouncement(key)) return;
+    toast.success(
+      `Sent to Account ${activity.to_account}`,
+      `${formatZecAmount(activity.amount_zatoshi)} confirmed.`,
+    );
+  };
+  const failed = (error: Error, variables: SendVariables) => {
+    if (isPaymentRejection(error)) {
+      payments.dismiss(paymentName('send', variables));
+      toast.error('Payment rejected', errorMessage(error));
+    } else {
+      toast.error('Payment not confirmed', errorMessage(error));
+    }
+  };
+  // A direct confirmation finishes only the submitted draft. Inputs remain
+  // editable during the POST, and a later confirmation must preserve edits.
+  const submitted = {
+    onError: failed,
+    onSuccess: (result: PaymentResult, variables: SendVariables) => {
+      if (result.activity.status !== 'confirmed') return;
+      announce(result);
+      if (result.cleanupError) return;
+      const draft = sendSchema.safeParse(form.getValues());
+      if (
+        !draft.success ||
+        paymentName('send', variablesFor(draft.data)) !== paymentName('send', variables)
+      )
+        return;
+      onOpenChange(false);
+      form.reset();
+    },
+  };
+  const resumed = {
+    onError: failed,
+    onSuccess: (result: PaymentResult) => {
+      if (result.activity.status === 'confirmed') announce(result);
+    },
+  };
 
   const fromAccount = useWatch({ control: form.control, name: 'from_account' });
   const sourcePool = useWatch({ control: form.control, name: 'source_pool' });
@@ -80,6 +137,14 @@ export function SendDialog({
   });
 
   const submit = form.handleSubmit(async (values) => {
+    // Replaying retained work must not depend on the account's current balance
+    // or a new proposal; it may already have spent those funds.
+    const variables = variablesFor(values);
+    const retained = payments.retained.find((item) => item.name === paymentName('send', variables));
+    if (retained) {
+      send.resume(retained, submitted);
+      return;
+    }
     if (values.amount > available) {
       form.setError('amount', {
         message: `Account ${values.from_account} holds ${formatZecAmount(available)} in the ${values.source_pool} pool.`,
@@ -94,27 +159,7 @@ export function SendDialog({
       return;
     }
 
-    send.mutate(
-      {
-        from_account: values.from_account,
-        to_account: values.to_account,
-        source_pool: values.source_pool,
-        destination_pool: values.destination_pool,
-        amount_zatoshi: values.amount,
-        ...(values.memo === '' ? {} : { memo: values.memo }),
-      },
-      {
-        onSuccess: (activity) => {
-          toast.success(
-            `Sent to Account ${activity.to_account}`,
-            'The transaction was mined into a new block.',
-          );
-          onOpenChange(false);
-          form.reset();
-        },
-        onError: (error) => toast.error('Transfer failed', errorMessage(error)),
-      },
-    );
+    send.mutate(variables, submitted);
   });
 
   const options = accountOptions(accounts);
@@ -127,6 +172,22 @@ export function SendDialog({
       title="Send ZEC"
       description="Moves existing funds between development accounts or pools. One block is mined to confirm."
     >
+      {open &&
+        payments.displayed.map((identity) => (
+          <PaymentStatus
+            key={identity.key}
+            identity={identity}
+            pendingName={send.pendingName}
+            claimAnnouncement={send.claimAnnouncement}
+            onTerminal={send.clear}
+            onResume={(item) => send.resume(item, resumed)}
+          />
+        ))}
+      {payments.error && (
+        <PaymentWarning role="alert" className="mb-3">
+          <p>Could not read saved payments: {errorMessage(payments.error)}</p>
+        </PaymentWarning>
+      )}
       <form onSubmit={(event) => void submit(event)} noValidate>
         <div className="grid gap-x-3 sm:grid-cols-2">
           <SelectField
@@ -221,7 +282,7 @@ export function SendDialog({
         </Field>
 
         <Button type="submit" variant="primary" size="block" loading={send.isPending}>
-          {send.isPending ? 'Sending…' : 'Send ZEC'}
+          {send.isPending ? 'Submitting…' : (retryLabel ?? 'Send ZEC')}
           {!send.isPending && <ArrowRight />}
         </Button>
       </form>
