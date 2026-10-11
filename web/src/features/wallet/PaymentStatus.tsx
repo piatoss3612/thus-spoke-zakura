@@ -31,6 +31,8 @@ export function PaymentStatus({
   onDismiss,
   onNew,
   container,
+  hidden,
+  onHiddenFocus,
 }: {
   identity: PaymentIdentity;
   restored: boolean;
@@ -42,6 +44,8 @@ export function PaymentStatus({
   onDismiss: () => void;
   onNew: () => void;
   container: HTMLElement | null;
+  hidden: boolean;
+  onHiddenFocus: () => void;
 }) {
   const status = usePaymentStatus(identity.key, true);
   const activity = status.data;
@@ -49,6 +53,8 @@ export function PaymentStatus({
   const titleId = useId();
   const recoveryId = useId();
   const heading = useRef<HTMLHeadingElement>(null);
+  const article = useRef<HTMLElement>(null);
+  const focused = useRef(false);
   const recoveryFocused = useRef(false);
   const handled = useRef(false);
   const mounted = useRef(true);
@@ -101,8 +107,20 @@ export function PaymentStatus({
     variables.amount_zatoshi,
   ]);
   useLayoutEffect(() => {
+    if (
+      hidden &&
+      focused.current &&
+      (document.activeElement === document.body ||
+        article.current?.contains(document.activeElement))
+    ) {
+      focused.current = false;
+      recoveryFocused.current = false;
+      onHiddenFocus();
+      return;
+    }
     // A removed recovery button needs a destination; ordinary polls keep focus.
     if (
+      !hidden &&
       (terminal || inFlight) &&
       recoveryFocused.current &&
       document.activeElement === document.body
@@ -110,7 +128,7 @@ export function PaymentStatus({
       heading.current?.focus();
       recoveryFocused.current = false;
     }
-  }, [terminal, inFlight]);
+  }, [hidden, terminal, inFlight, onHiddenFocus]);
   const checkCleanup = async () => {
     setCheckingCleanup(true);
     try {
@@ -159,13 +177,20 @@ export function PaymentStatus({
   if (!container) return null;
   return createPortal(
     <article
+      ref={article}
+      hidden={hidden}
+      data-payment-key={identity.key}
       className="border-line border-b px-4 py-3 text-[12px] wrap-anywhere last:border-b-0"
       onFocusCapture={(event) => {
+        focused.current = true;
         recoveryFocused.current =
           event.target instanceof HTMLElement && event.target.dataset.recovery === 'true';
       }}
       onBlurCapture={(event) => {
-        if (event.relatedTarget) recoveryFocused.current = false;
+        if (event.relatedTarget) {
+          recoveryFocused.current = false;
+          focused.current = event.currentTarget.contains(event.relatedTarget);
+        }
       }}
     >
       <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
@@ -248,7 +273,8 @@ export function PaymentStatus({
             </p>
             {activity && !failed && (
               <p>
-                Stages: Preparing → Prepared → Broadcast → Confirmed. Current: {activity.status}.
+                Stages: Preparing → Ready → Confirming → Confirmed. Current:{' '}
+                {labels[activity.status]}.
               </p>
             )}
             {activity?.created_at && <p>Created: {activity.created_at}</p>}

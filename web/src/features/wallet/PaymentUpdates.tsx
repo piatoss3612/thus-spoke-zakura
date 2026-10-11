@@ -5,11 +5,21 @@ import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
 import { useToast } from '@/components/ui/toast-context';
 import { api, errorMessage, isPaymentRejection } from '@/lib/api';
-import { queryKeys, isTerminalPayment } from '@/hooks/queries';
+import { cn } from '@/lib/cn';
+import { queryKeys } from '@/hooks/queries';
 import type { PaymentIdentity } from '@/hooks/payment-identity';
 import { useWalletPayments } from './payment-context';
 import { useWalletActions } from './wallet-actions-context';
 import { PaymentStatus, PaymentWarning } from './PaymentStatus';
+
+const FILTERS = ['all', 'unresolved', 'confirmed', 'failed'] as const;
+type PaymentFilter = (typeof FILTERS)[number];
+const LABELS: Record<PaymentFilter, string> = {
+  all: 'All',
+  unresolved: 'Unresolved',
+  confirmed: 'Confirmed',
+  failed: 'Failed',
+};
 
 export function PaymentUpdates() {
   const { send, faucet, savedSend, savedFaucet, isRestored } = useWalletPayments();
@@ -17,9 +27,13 @@ export function PaymentUpdates() {
   const toast = useToast();
   const identities = [...savedSend.displayed, ...savedFaucet.displayed];
   const [open, setOpen] = useState(false);
+  // null selects All without announcing results when the panel first opens.
+  const [filter, setFilter] = useState<PaymentFilter | null>(null);
+  const selected = filter ?? 'all';
   const [visibleKeys, setVisibleKeys] = useState<string[]>([]);
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
+  const activeFilter = useRef<HTMLButtonElement>(null);
   // Observe the same Query snapshots for counts, without starting extra reads.
   const statuses = useQueries({
     queries: identities.map(({ key }) => ({
@@ -30,25 +44,30 @@ export function PaymentUpdates() {
   });
   // Prioritize unresolved work when opening, then keep rows stable while the
   // panel is in use so a background confirmation cannot move focused controls.
-  const visible = [...identities].sort((a, b) => {
-    const first = visibleKeys.indexOf(a.key);
-    const second = visibleKeys.indexOf(b.key);
-    return (first < 0 ? identities.length : first) - (second < 0 ? identities.length : second);
-  });
-  const counts = { unresolved: 0, confirmed: 0, failed: 0 };
-  for (const status of statuses) {
-    if (status.data?.status === 'confirmed') counts.confirmed++;
-    else if (status.data?.status === 'failed') counts.failed++;
-    else counts.unresolved++;
-  }
+  const ordered = identities
+    .map((identity, index) => {
+      const status = statuses[index]?.data?.status;
+      const group: Exclude<PaymentFilter, 'all'> =
+        status === 'confirmed' || status === 'failed' ? status : 'unresolved';
+      return { identity, group };
+    })
+    .sort((a, b) => {
+      const first = visibleKeys.indexOf(a.identity.key);
+      const second = visibleKeys.indexOf(b.identity.key);
+      return (first < 0 ? identities.length : first) - (second < 0 ? identities.length : second);
+    });
+  const counts = { all: identities.length, unresolved: 0, confirmed: 0, failed: 0 };
+  for (const { group } of ordered) counts[group]++;
+  const visible = ordered.filter(({ group }) => selected === 'all' || group === selected);
+  const includedKeys = new Set(visible.map(({ identity }) => identity.key));
   const summary = Object.entries(counts)
-    .filter(([, count]) => count > 0)
+    .filter(([state, count]) => state !== 'all' && count > 0)
     .map(([state, count]) => `${count} ${state}`)
     .join(' · ');
   const errors = [savedSend.error, savedFaucet.error].filter((error) => error !== null);
-  const finished = identities.filter(
-    (identity, index) =>
-      isTerminalPayment(statuses[index]?.data) &&
+  const finished = visible.filter(
+    ({ identity, group }) =>
+      group !== 'unresolved' &&
       !(identity.kind === 'send' ? savedSend : savedFaucet).retained.some(
         ({ key }) => key === identity.key,
       ),
@@ -56,15 +75,23 @@ export function PaymentUpdates() {
   const attention = errors.length > 0 || counts.failed > 0;
   const active = send.isPending || faucet.isPending;
   const StatusIcon = attention ? AlertTriangle : active ? Loader2 : Clock3;
+  const focusNext = (identity: PaymentIdentity) => {
+    const headings = [
+      ...(container?.querySelectorAll<HTMLHeadingElement>('article:not([hidden]) h3') ?? []),
+    ];
+    const index = ordered.findIndex((item) => item.identity.key === identity.key);
+    const position = (heading: HTMLHeadingElement) =>
+      ordered.findIndex(
+        (item) => item.identity.key === heading.closest('article')?.dataset.paymentKey,
+      );
+    const next =
+      headings.find((heading) => position(heading) > index) ??
+      [...headings].reverse().find((heading) => position(heading) < index);
+    (next ?? activeFilter.current ?? container)?.focus();
+  };
   const dismiss = (identity: PaymentIdentity) => {
-    const headings = [...(container?.querySelectorAll<HTMLHeadingElement>('h3') ?? [])];
-    const index = visible.findIndex((item) => item.key === identity.key);
-    const next = headings[index + 1] ?? headings[index - 1];
     (identity.kind === 'send' ? savedSend : savedFaucet).dismissKey(identity.key);
-    requestAnimationFrame(() => {
-      const target = next?.isConnected ? next : container;
-      target?.focus();
-    });
+    requestAnimationFrame(() => focusNext(identity));
   };
   const startNew = (identity: PaymentIdentity) => {
     setOpen(false);
@@ -93,6 +120,7 @@ export function PaymentUpdates() {
               .sort((a, b) => priority(a.status) - priority(b.status))
               .map(({ identity }) => identity.key),
           );
+          setFilter(null);
           setOpen(true);
         }}
       >
@@ -102,7 +130,7 @@ export function PaymentUpdates() {
         />
         Payments
         {identities.length > 0 && (
-          <span className="bg-accent-soft text-accent-strong rounded-xs px-1.5 text-[11px]">
+          <span className="bg-accent-soft text-accent-strong rounded-xs px-1.5 text-[11px] tabular-nums">
             {identities.length}
           </span>
         )}
@@ -122,50 +150,112 @@ export function PaymentUpdates() {
           }
         }}
         title="Payments"
-        description={summary || (errors.length ? 'Storage unavailable' : 'No payment updates')}
-        className="w-[min(540px,calc(100vw-36px))]"
+        description={
+          identities.length ? 'Status checks are automatic. Resume repeats the saved request.' : ''
+        }
+        className="flex max-h-[calc(100dvh-36px)] w-[min(540px,calc(100vw-36px))] flex-col overflow-y-hidden"
+        bodyClassName="relative flex min-h-0 flex-col [&>p]:shrink-0"
       >
-        {errors.length > 0 && (
-          <PaymentWarning role="alert" className="mb-3">
-            <p>Couldn’t load saved payments: {errors.map(errorMessage).join('; ')}</p>
-            <p>Allow site storage and reload.</p>
-          </PaymentWarning>
-        )}
         {identities.length > 0 && (
-          <p className="text-ink-muted mb-3 text-[12px]">
-            Status checks are automatic. Resume repeats the saved request.
-          </p>
+          <div
+            role="group"
+            aria-label="Filter payments"
+            className="xp-sunken bg-sunken mb-3 grid shrink-0 grid-cols-2 gap-0.5 rounded-xs p-0.5 sm:grid-cols-4"
+          >
+            {FILTERS.map((value) => (
+              <button
+                key={value}
+                ref={value === selected ? activeFilter : undefined}
+                type="button"
+                aria-pressed={value === selected}
+                onClick={() => {
+                  setFilter(value);
+                  if (container) container.scrollTop = 0;
+                }}
+                className={cn(
+                  'min-h-8 cursor-pointer rounded-xs px-2.5 py-1.5 text-[12px] whitespace-nowrap',
+                  value === selected
+                    ? 'xp-raised bg-raised text-accent-strong'
+                    : 'text-ink-muted hover:text-ink',
+                )}
+              >
+                {LABELS[value]} <span className="tabular-nums">{counts[value]}</span>
+              </button>
+            ))}
+          </div>
         )}
+        <p role="status" className="sr-only">
+          {filter !== null &&
+            (visible.length
+              ? `Showing ${visible.length} ${selected === 'all' ? '' : `${selected} `}${visible.length === 1 ? 'payment' : 'payments'}.`
+              : selected === 'all'
+                ? 'No payment updates.'
+                : `No ${selected} payments.`)}
+        </p>
         <div
           ref={setContainer}
           role="region"
           aria-label="Payment updates"
           tabIndex={-1}
-          className="border-line max-h-[min(55dvh,440px)] overflow-y-auto overscroll-contain rounded-xs border empty:border-0"
-        />
+          className={cn(
+            'border-line relative max-h-[min(55dvh,440px)] min-h-0 overflow-y-auto overscroll-contain rounded-xs',
+            (visible.length > 0 || errors.length > 0) && 'border',
+          )}
+        >
+          {errors.length > 0 && (
+            <PaymentWarning role="alert" className="m-3">
+              <p>Couldn’t load saved payments: {errors.map(errorMessage).join('; ')}</p>
+              <p>Allow site storage and reload.</p>
+            </PaymentWarning>
+          )}
+          {!visible.length && (identities.length > 0 || errors.length === 0) && (
+            <div className="text-ink-muted p-4 text-[12px]">
+              <p>{selected === 'all' ? 'No payment updates' : `No ${selected} payments.`}</p>
+              {selected !== 'all' && (
+                <Button
+                  size="sm"
+                  className="mt-3"
+                  onClick={() => {
+                    setFilter('all');
+                    requestAnimationFrame(() => activeFilter.current?.focus());
+                  }}
+                >
+                  Show all
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
         {finished.length > 0 && (
-          <div className="mt-3 flex justify-end">
+          <div className="mt-3 flex shrink-0 justify-end">
             <Button
               size="sm"
               variant="ghost"
               onClick={() => {
-                for (const identity of finished) {
+                for (const { identity } of finished) {
                   (identity.kind === 'send' ? savedSend : savedFaucet).dismissKey(identity.key);
                 }
-                container?.focus();
+                requestAnimationFrame(() =>
+                  (finished.length === visible.length
+                    ? (activeFilter.current ?? container)
+                    : container
+                  )?.focus(),
+                );
               }}
             >
-              Clear finished
+              {selected === 'all' ? 'Clear finished' : `Clear ${selected}`}
             </Button>
           </div>
         )}
       </Dialog>
-      {visible.map((identity) => {
+      {ordered.map(({ identity }) => {
         const operation = identity.kind === 'send' ? send : faucet;
         return (
           <PaymentStatus
             key={identity.key}
             container={container}
+            hidden={!includedKeys.has(identity.key)}
+            onHiddenFocus={() => focusNext(identity)}
             identity={identity}
             restored={isRestored(identity.key)}
             pendingKey={operation.pendingKey}

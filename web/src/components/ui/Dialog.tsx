@@ -15,6 +15,7 @@ export function Dialog({
   description,
   children,
   className,
+  bodyClassName,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -23,6 +24,7 @@ export function Dialog({
   description?: string;
   children: ReactNode;
   className?: string;
+  bodyClassName?: string;
 }) {
   const opener = useRef<HTMLElement | null>(null);
   return (
@@ -46,7 +48,7 @@ export function Dialog({
             className,
           )}
         >
-          <div className="xp-caption flex items-center justify-between gap-4 px-3 py-1.5">
+          <div className="xp-caption flex shrink-0 items-center justify-between gap-4 px-3 py-1.5">
             <RadixDialog.Title className="text-[13px] font-semibold tracking-wide">
               {title}
             </RadixDialog.Title>
@@ -57,7 +59,7 @@ export function Dialog({
               <X className="size-3" />
             </RadixDialog.Close>
           </div>
-          <div className="p-5">
+          <div className={cn('p-5', bodyClassName)}>
             {eyebrow && (
               <span className="text-accent mb-1 block font-mono text-[11px] font-medium tracking-[0.13em]">
                 {eyebrow}
