@@ -36,9 +36,13 @@ function PoolLabel({ pool }: { pool: Activity['source_pool'] }) {
 
 function ActivityRow({ activity, index }: { activity: Activity; index: number }) {
   const isFaucet = activity.kind === 'faucet';
+  const transactionPath = activity.txid ? `/explorer/tx/${activity.txid}` : null;
+  const transfer = isFaucet
+    ? `Faucet → Account ${activity.to_account}`
+    : `Account ${activity.from_account ?? '?'} → Account ${activity.to_account}`;
 
   return (
-    <Row index={index} to={`/explorer/tx/${activity.txid}`}>
+    <Row index={index} {...(transactionPath ? { to: transactionPath } : {})}>
       <td>
         <div className="flex items-center gap-2.5">
           <span
@@ -50,17 +54,25 @@ function ActivityRow({ activity, index }: { activity: Activity; index: number })
           >
             {isFaucet ? <ArrowDownToLine className="size-3" /> : <ArrowRight className="size-3" />}
           </span>
-          <Link
-            to={`/explorer/tx/${activity.txid}`}
-            className="min-w-0 font-semibold hover:underline"
-          >
-            <span className="block truncate">
-              {isFaucet
-                ? `Faucet → Account ${activity.to_account}`
-                : `Account ${activity.from_account ?? '?'} → Account ${activity.to_account}`}
-            </span>
-          </Link>
+          {transactionPath ? (
+            <Link to={transactionPath} className="min-w-0 font-semibold hover:underline">
+              <span className="block truncate">{transfer}</span>
+            </Link>
+          ) : (
+            <span className="min-w-0 truncate font-semibold">{transfer}</span>
+          )}
         </div>
+        {activity.last_error && (
+          <p
+            className={cn(
+              'mt-1 text-[11px] wrap-anywhere',
+              activity.status === 'failed' ? 'text-negative' : 'text-warning',
+            )}
+          >
+            {activity.status === 'failed' ? 'Failed: ' : 'Latest execution error: '}
+            {activity.last_error}
+          </p>
+        )}
       </td>
 
       <td className="max-sm:hidden">
@@ -70,9 +82,13 @@ function ActivityRow({ activity, index }: { activity: Activity; index: number })
       </td>
 
       <td className="min-w-0">
-        <code className="text-ink block truncate font-mono" title={activity.txid}>
-          {shortHash(activity.txid)}
-        </code>
+        {activity.txid ? (
+          <code className="text-ink block truncate font-mono" title={activity.txid}>
+            {shortHash(activity.txid)}
+          </code>
+        ) : (
+          <span className="text-ink-muted">Not prepared</span>
+        )}
       </td>
 
       <NumCell className="font-semibold">{formatZecAmount(activity.amount_zatoshi)}</NumCell>
