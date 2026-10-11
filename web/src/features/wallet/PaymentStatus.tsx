@@ -1,4 +1,6 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
+import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -20,145 +22,301 @@ import { cn } from '@/lib/cn';
 
 export function PaymentStatus({
   identity,
-  pendingName,
+  restored,
+  pendingKey,
+  busy,
   claimAnnouncement,
   onTerminal,
   onResume,
+  onDismiss,
+  onNew,
+  container,
 }: {
   identity: PaymentIdentity;
-  /** The payment whose POST is in flight, if any. */
-  pendingName: string | null;
+  restored: boolean;
+  pendingKey: string | null;
+  busy: boolean;
   claimAnnouncement: (key: string) => boolean;
   onTerminal: (identity: PaymentIdentity) => Promise<void>;
   onResume: (identity: PaymentIdentity) => void;
+  onDismiss: () => void;
+  onNew: () => void;
+  container: HTMLElement | null;
 }) {
   const status = usePaymentStatus(identity.key, true);
   const activity = status.data;
   const toast = useToast();
   const titleId = useId();
-  const inFlight = pendingName === identity.name;
+  const recoveryId = useId();
+  const heading = useRef<HTMLHeadingElement>(null);
+  const recoveryFocused = useRef(false);
   const handled = useRef(false);
   const mounted = useRef(true);
+  const [cleanupError, setCleanupError] = useState<string | null>(null);
+  const [checkingCleanup, setCheckingCleanup] = useState(false);
+  const terminal = isTerminalPayment(activity);
+  const confirmed = activity?.status === 'confirmed';
+  const failed = activity?.status === 'failed';
+  const inFlight = pendingKey === identity.key;
+  const variables = identity.variables;
+  const destination =
+    identity.kind === 'send' ? identity.variables.to_account : identity.variables.account_id;
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
     };
   }, []);
-  const [cleanupError, setCleanupError] = useState<string | null>(null);
   useEffect(() => {
-    if (!isTerminalPayment(activity) || handled.current) return;
+    if (!terminal || handled.current) return;
     handled.current = true;
-    if (activity?.status === 'confirmed' && claimAnnouncement(identity.key)) {
-      toast.success(
-        identity.kind === 'send'
-          ? `Sent to Account ${activity.to_account}`
-          : `Funded Account ${activity.to_account}`,
-        `${formatZecAmount(activity.amount_zatoshi)} confirmed.`,
-      );
+    if (!restored && claimAnnouncement(identity.key)) {
+      if (confirmed) {
+        toast.success(
+          identity.kind === 'send'
+            ? `Sent to Account ${destination}`
+            : `Funded Account ${destination}`,
+          `${formatZecAmount(variables.amount_zatoshi)} confirmed.`,
+        );
+      } else {
+        toast.error(
+          'Payment failed',
+          activity?.last_error ?? 'The server marked this payment as failed.',
+        );
+      }
     }
     void onTerminal(identity).catch((error: unknown) => {
-      if (!mounted.current) return;
-      setCleanupError(
-        `Could not clear this saved payment: ${errorMessage(error)}. Allow site storage, then reopen this dialog. The payment itself is unaffected.`,
-      );
+      if (mounted.current) setCleanupError(errorMessage(error));
     });
-  }, [activity, claimAnnouncement, identity, onTerminal, toast]);
-
-  const variables = identity.variables;
-  const destination = 'to_account' in variables ? variables.to_account : variables.account_id;
-  const terminal = isTerminalPayment(activity);
-  const confirmed = activity?.status === 'confirmed';
-  const failed = activity?.status === 'failed';
-  const stage = activity?.status ?? (inFlight ? 'submitting' : 'unknown');
-  // GET observes status but cannot broadcast prepared bytes or resume failed
-  // auto-mining. Every nonterminal payment keeps an explicit same-key replay.
-  const canRetry = !terminal && !inFlight;
+  }, [
+    terminal,
+    restored,
+    confirmed,
+    activity,
+    claimAnnouncement,
+    destination,
+    identity,
+    onTerminal,
+    toast,
+    variables.amount_zatoshi,
+  ]);
+  useLayoutEffect(() => {
+    // A removed recovery button needs a destination; ordinary polls keep focus.
+    if (
+      (terminal || inFlight) &&
+      recoveryFocused.current &&
+      document.activeElement === document.body
+    ) {
+      heading.current?.focus();
+      recoveryFocused.current = false;
+    }
+  }, [terminal, inFlight]);
+  const checkCleanup = async () => {
+    setCheckingCleanup(true);
+    try {
+      const result = await status.refetch();
+      if (result.error) throw result.error;
+      if (isTerminalPayment(result.data)) await onTerminal(identity);
+      if (mounted.current) setCleanupError(null);
+    } catch (error) {
+      if (mounted.current) setCleanupError(errorMessage(error));
+    } finally {
+      if (mounted.current) setCheckingCleanup(false);
+    }
+  };
+  const stage =
+    activity?.status ??
+    (inFlight
+      ? 'submitting'
+      : status.isPending
+        ? 'checking'
+        : status.isError
+          ? 'status unavailable'
+          : 'unknown');
   const StatusIcon = confirmed
     ? CheckCircle2
     : failed
       ? XCircle
-      : inFlight
+      : inFlight || status.isPending
         ? Loader2
         : activity
           ? Clock3
           : HelpCircle;
-  const warnings = [
-    !terminal && activity?.last_error && `Latest execution error: ${activity.last_error}`,
-    !terminal && status.isError && `Status unavailable: ${errorMessage(status.error)}`,
-    cleanupError,
-  ].filter((warning): warning is string => Boolean(warning));
+  const labels: Record<string, string> = {
+    preparing: 'Preparing',
+    prepared: 'Ready',
+    broadcast: 'Confirming',
+    confirmed: 'Confirmed',
+    failed: 'Failed',
+    submitting: 'Submitting',
+    checking: 'Checking',
+    'status unavailable': 'Status unavailable',
+    unknown: 'Unknown',
+  };
 
-  return (
-    <div className="border-line bg-raised mb-3 rounded-xs border p-3 text-[12px] wrap-anywhere">
+  // Polling and terminal cleanup outlive the on-demand panel. Only the view
+  // is portalled into its scroll area, so closing it cannot interrupt recovery.
+  if (!container) return null;
+  return createPortal(
+    <article
+      className="border-line border-b px-4 py-3 text-[12px] wrap-anywhere last:border-b-0"
+      onFocusCapture={(event) => {
+        recoveryFocused.current =
+          event.target instanceof HTMLElement && event.target.dataset.recovery === 'true';
+      }}
+      onBlurCapture={(event) => {
+        if (event.relatedTarget) recoveryFocused.current = false;
+      }}
+    >
       <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
-        <div className="min-w-48 flex-1">
-          <p id={titleId} className="font-semibold">
-            {'from_account' in variables && `Account ${variables.from_account} → `}
+        <div className="min-w-[min(100%,180px)] flex-1">
+          <h3 id={titleId} ref={heading} tabIndex={-1} className="font-semibold">
+            {identity.kind === 'send'
+              ? `Account ${identity.variables.from_account} → `
+              : 'Faucet → '}
             Account {destination} · {formatZecAmount(variables.amount_zatoshi)}
-          </p>
-          <p className="text-ink-muted mt-0.5">
-            {'source_pool' in variables
-              ? `${variables.source_pool} → ${variables.destination_pool}`
-              : variables.pool}
-            {'memo' in variables && ` · Memo: ${variables.memo}`}
-          </p>
+          </h3>
         </div>
-        <Badge tone={statusTone(stage)} className="shrink-0">
-          {stage}
-        </Badge>
+        <span role="status">
+          <Badge tone={statusTone(stage)} className="gap-1">
+            <StatusIcon
+              className={cn(
+                'size-3 shrink-0',
+                StatusIcon === Loader2 && 'motion-safe:animate-spin',
+              )}
+              aria-hidden
+            />
+            {labels[stage] ?? stage}
+          </Badge>
+        </span>
       </div>
-      <div role={failed ? 'alert' : 'status'} className="mt-2.5 space-y-1.5">
-        <p
-          className={cn(
-            'flex items-start gap-1.5',
-            confirmed ? 'text-positive' : failed ? 'text-negative' : 'text-ink-muted',
-          )}
-        >
-          <StatusIcon
-            className={cn('mt-px size-3.5 shrink-0', StatusIcon === Loader2 && 'animate-spin')}
-            aria-hidden
-          />
-          <span>
-            {confirmed
-              ? 'Payment confirmed.'
-              : failed
-                ? `Payment failed: ${activity.last_error ?? 'The server marked this payment as failed.'}`
-                : inFlight
-                  ? 'Submitting payment…'
-                  : !activity
-                    ? 'Status unknown. Retry sends the same request again and cannot pay twice.'
-                    : activity.status === 'preparing'
-                      ? 'Not prepared yet. Retry resumes the same request and cannot pay twice.'
-                      : activity.status === 'prepared'
-                        ? 'Ready to broadcast. Retry sends the same prepared transaction and cannot pay twice.'
-                        : 'Waiting for confirmation. Status updates automatically; you can close this dialog.'}
-          </span>
+      {failed && (
+        <p className="text-negative mt-2">
+          {activity.last_error ?? 'The server marked this payment as failed.'}
         </p>
-        {failed && <p className="text-ink-muted pl-5">Use the form below to send a new payment.</p>}
-        {warnings.map((warning) => (
-          <p key={warning} className="text-warning flex items-start gap-1.5">
-            <AlertTriangle className="mt-px size-3.5 shrink-0" aria-hidden />
-            <span>{warning}</span>
-          </p>
-        ))}
-      </div>
-      {canRetry && (
-        <div className="mt-2.5 flex justify-end">
-          <Button
-            type="button"
-            size="sm"
-            variant="subtle"
-            disabled={pendingName !== null}
-            aria-describedby={titleId}
-            onClick={() => onResume(identity)}
-          >
-            <RotateCcw aria-hidden />
-            Retry
-          </Button>
-        </div>
       )}
-    </div>
+      {!terminal && !activity && !status.isPending && !status.isError && (
+        <p className="text-ink-muted mt-2">No record yet. The request is saved.</p>
+      )}
+      {!terminal && activity?.last_error && (
+        <PaymentWarning className="mt-2">
+          <p>Latest execution error: {activity.last_error}</p>
+          <p>Recovery may still be running.</p>
+        </PaymentWarning>
+      )}
+      {!terminal && status.isError && (
+        <PaymentWarning className="mt-2">
+          <p>Couldn’t check status: {errorMessage(status.error)}</p>
+          <p>
+            {activity
+              ? 'Last known status shown. The request is saved.'
+              : 'We’ll keep checking. The request is saved.'}
+          </p>
+        </PaymentWarning>
+      )}
+      {cleanupError && (
+        <PaymentWarning className="mt-2">
+          <p>Couldn’t clear saved request: {cleanupError}</p>
+          <p>Allow site storage, then check again.</p>
+        </PaymentWarning>
+      )}
+      <div className="mt-2 flex flex-wrap items-end justify-between gap-2">
+        <details className="text-ink-muted min-w-20 flex-1 open:basis-full">
+          <summary aria-describedby={titleId} className="w-fit cursor-pointer">
+            Details
+          </summary>
+          <div className="mt-2 space-y-1">
+            {restored && <p>Previous payment</p>}
+            <p>
+              Pool route:{' '}
+              {identity.kind === 'send'
+                ? `${identity.variables.source_pool} → ${identity.variables.destination_pool}`
+                : identity.variables.pool}
+            </p>
+            {identity.kind === 'send' && (
+              <p>
+                Memo:{' '}
+                {identity.variables.memo === undefined
+                  ? 'None'
+                  : identity.variables.memo === ''
+                    ? '(empty)'
+                    : identity.variables.memo}
+              </p>
+            )}
+            <p>
+              Request key: <span className="font-mono break-all">{identity.key}</span>
+            </p>
+            {activity && !failed && (
+              <p>
+                Stages: Preparing → Prepared → Broadcast → Confirmed. Current: {activity.status}.
+              </p>
+            )}
+            {activity?.created_at && <p>Created: {activity.created_at}</p>}
+            {failed && (
+              <p>Adding funds won’t restart this payment. Start a new one to try again.</p>
+            )}
+          </div>
+        </details>
+        {!terminal && !inFlight && (
+          <p id={recoveryId} className="sr-only">
+            Resume uses the saved request and key.
+          </p>
+        )}
+        <div className="flex flex-wrap justify-end gap-2">
+          {!terminal && !inFlight && !status.isPending && (
+            <Button
+              type="button"
+              size="sm"
+              variant="subtle"
+              disabled={busy}
+              data-recovery="true"
+              aria-describedby={`${titleId} ${recoveryId}`}
+              onClick={() => onResume(identity)}
+            >
+              <RotateCcw aria-hidden />
+              Resume
+            </Button>
+          )}
+          {confirmed && activity.txid && (
+            <Link
+              className="text-accent-strong self-center underline underline-offset-2"
+              aria-describedby={titleId}
+              to={`/explorer/tx/${activity.txid}`}
+            >
+              View transaction
+            </Link>
+          )}
+          {failed && (
+            <Button type="button" size="sm" aria-describedby={titleId} onClick={onNew}>
+              {identity.kind === 'send' ? 'New Send' : 'Request funds'}
+            </Button>
+          )}
+          {terminal &&
+            (cleanupError ? (
+              <Button
+                type="button"
+                size="sm"
+                loading={checkingCleanup}
+                aria-describedby={titleId}
+                onClick={() => void checkCleanup()}
+              >
+                Check again
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                aria-describedby={titleId}
+                onClick={onDismiss}
+              >
+                Dismiss
+              </Button>
+            ))}
+        </div>
+      </div>
+    </article>,
+    container,
   );
 }
 

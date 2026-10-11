@@ -177,11 +177,6 @@ function usePaymentMutation<T extends SendVariables | FaucetVariables>(
     clear,
     resume,
     claimAnnouncement,
-    /** Names the payment whose POST is in flight, so its status can say so. */
-    pendingName:
-      mutation.isPending && mutation.variables
-        ? paymentName(kind, mutation.variables.variables)
-        : null,
     pendingKey: mutation.isPending ? pendingKey : null,
     mutate: (variables: T, options?: PaymentCallbacks<T>) => {
       setPendingKey(null);

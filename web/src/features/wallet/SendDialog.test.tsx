@@ -1,7 +1,12 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { useState } from 'react';
 import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders, requestUrl, testAccounts } from '@/test/utils';
+import {
+  renderWithWalletActions as renderWithProviders,
+  requestUrl,
+  testAccounts,
+} from '@/test/utils';
 import { SendDialog } from './SendDialog';
 
 /**
@@ -225,16 +230,19 @@ describe('SendDialog', () => {
       await userEvent.type(field, '2');
       await userEvent.click(screen.getByRole('button', { name: 'Send ZEC' }));
       expect(await screen.findAllByText('Sent to Account 2')).toHaveLength(1);
-      expect(await screen.findByText('Payment confirmed.')).toBeInTheDocument();
+      await waitFor(() =>
+        expect(screen.getByText('Payments').closest('button')).toHaveAttribute(
+          'aria-label',
+          expect.stringMatching(/1 confirmed/),
+        ),
+      );
       if (cleanupFailure === 'none') {
         await waitFor(() => expect(close).toHaveBeenCalledWith(false));
         expect(screen.getByLabelText('Amount (ZEC)')).toHaveValue('1');
       } else {
-        expect(
-          await screen.findByText(/Allow site storage, then reopen this dialog/),
-        ).toBeInTheDocument();
+        expect(await screen.findByText(/Previous payment finished/)).toBeInTheDocument();
         await waitFor(() =>
-          expect(screen.getByRole('button', { name: 'Retry 2 ZEC to Account 2' })).toBeEnabled(),
+          expect(screen.getByRole('button', { name: 'Send ZEC' })).toBeDisabled(),
         );
         expect(screen.queryByText('Payment not confirmed')).not.toBeInTheDocument();
         expect(close).not.toHaveBeenCalled();
@@ -244,42 +252,60 @@ describe('SendDialog', () => {
         restoreCleanup!();
         first.unmount();
         renderWithProviders(<SendDialog open onOpenChange={close} accounts={testAccounts} />);
-        expect(await screen.findByText('Payment confirmed.')).toBeInTheDocument();
+        await waitFor(() =>
+          expect(screen.getByText('Payments').closest('button')).toHaveAccessibleName(
+            /1 confirmed/,
+          ),
+        );
         await waitFor(() => expect(localStorage.getItem(record)).toBeNull());
         expect(sendCalls(fetchMock)).toHaveLength(1);
       }
-      expect(screen.getAllByText('Sent to Account 2')).toHaveLength(1);
+      expect(screen.queryAllByText('Sent to Account 2')).toHaveLength(
+        cleanupFailure === 'none' ? 1 : 0,
+      );
     },
   );
 
-  it('shows submission without Retry and keeps edits when its response confirms', async () => {
-    let payment: typeof PENDING | undefined;
-    let confirm!: (response: Response) => void;
-    const response = new Promise<Response>((resolve) => {
-      confirm = resolve;
-    });
-    fetchMock.mockImplementation((input, init) =>
-      requestUrl(input).endsWith('/send') ? response : sendImpl(QUOTE, payment)(input, init),
-    );
-    const close = vi.fn();
-    renderWithProviders(<SendDialog open onOpenChange={close} accounts={testAccounts} />);
-    await userEvent.click(screen.getByRole('button', { name: 'Send ZEC' }));
-    expect(await screen.findByText('Submitting payment…')).toBeInTheDocument();
-    expect(screen.queryByText(/Status unknown/)).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
-    await userEvent.clear(screen.getByLabelText('Amount (ZEC)'));
-    await userEvent.type(screen.getByLabelText('Amount (ZEC)'), '2');
-    await userEvent.type(screen.getByLabelText('Memo (optional)'), 'next payment draft');
-    await act(async () => {
-      payment = { ...PENDING, status: 'confirmed' };
-      confirm(await sendImpl(QUOTE, payment)('/api/v1/send', sendCalls(fetchMock)[0]?.[1]));
-    });
-    expect(await screen.findByText('Payment confirmed.')).toBeInTheDocument();
-    expect(close).not.toHaveBeenCalled();
-    expect(screen.getByLabelText('Amount (ZEC)')).toHaveValue('2');
-    expect(screen.getByLabelText('Memo (optional)')).toHaveValue('next payment draft');
-    expect(screen.getAllByText('Sent to Account 2')).toHaveLength(1);
-  });
+  it.each(['preparing', 'confirmed'])(
+    'shows submission without Resume and keeps edits when its response is %s',
+    async (status) => {
+      let payment: typeof PENDING | undefined;
+      let confirm!: (response: Response) => void;
+      const response = new Promise<Response>((resolve) => {
+        confirm = resolve;
+      });
+      fetchMock.mockImplementation((input, init) =>
+        requestUrl(input).endsWith('/send') ? response : sendImpl(QUOTE, payment)(input, init),
+      );
+      const close = vi.fn();
+      renderWithProviders(<SendDialog open onOpenChange={close} accounts={testAccounts} />);
+      await userEvent.click(screen.getByRole('button', { name: 'Send ZEC' }));
+      expect(await screen.findAllByText('Submitting payment…')).toHaveLength(1);
+      expect(screen.queryByText(/Payment outcome unknown/)).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: 'Resume payment', hidden: true }),
+      ).not.toBeInTheDocument();
+      await userEvent.clear(screen.getByLabelText('Amount (ZEC)'));
+      await userEvent.type(screen.getByLabelText('Amount (ZEC)'), '2');
+      await userEvent.type(screen.getByLabelText('Memo (optional)'), 'next payment draft');
+      await act(async () => {
+        payment = { ...PENDING, status };
+        confirm(await sendImpl(QUOTE, payment)('/api/v1/send', sendCalls(fetchMock)[0]?.[1]));
+      });
+      await waitFor(() =>
+        expect(screen.getByText('Payments').closest('button')).toHaveAccessibleName(
+          status === 'confirmed' ? /1 confirmed/ : /1 unresolved/,
+        ),
+      );
+      expect(await screen.findByText(/Your draft is unchanged/)).toBeInTheDocument();
+      expect(close).not.toHaveBeenCalled();
+      expect(screen.getByLabelText('Amount (ZEC)')).toHaveValue('2');
+      expect(screen.getByLabelText('Memo (optional)')).toHaveValue('next payment draft');
+      expect(screen.queryAllByText('Sent to Account 2')).toHaveLength(
+        status === 'confirmed' ? 1 : 0,
+      );
+    },
+  );
 
   it.each(['absent', 'retained', 'unavailable'] as const)(
     'releases a rejection only after proving its server record absent (lookup: %s)',
@@ -311,14 +337,16 @@ describe('SendDialog', () => {
       const name = 'ths:send:[1,2,"ironwood","ironwood","100000000",null]';
       if (lookup === 'absent') {
         expect(localStorage.length).toBe(0);
-        await waitFor(() => expect(screen.queryByText(/Status unknown/)).not.toBeInTheDocument());
+        await waitFor(() =>
+          expect(screen.queryByText(/Payment outcome unknown/)).not.toBeInTheDocument(),
+        );
       } else {
         expect(localStorage.getItem(name)).toBe(first);
       }
       fetchMock.mockImplementation(sendImpl(QUOTE));
       await userEvent.click(
         screen.getByRole('button', {
-          name: lookup === 'absent' ? 'Send ZEC' : 'Retry 1 ZEC to Account 2',
+          name: lookup === 'absent' ? 'Send ZEC' : 'Resume payment',
         }),
       );
       await waitFor(() => expect(sendCalls(fetchMock)).toHaveLength(2));
@@ -343,8 +371,13 @@ describe('SendDialog', () => {
     expect(localStorage.getItem('ths:send:[1,2,"ironwood","ironwood","100000000",null]')).toBe(
       body(fetchMock).idempotency_key,
     );
-    expect(await screen.findByText(/Status unknown/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Retry 1 ZEC to Account 2' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByText('Payments').closest('button')).toHaveAttribute(
+        'aria-label',
+        expect.stringMatching(/1 unresolved/),
+      ),
+    );
+    expect(screen.getByRole('button', { name: 'Resume payment' })).toBeInTheDocument();
   });
 
   it.each([
@@ -391,7 +424,7 @@ describe('SendDialog', () => {
       await chooseRoute();
       const memo = screen.getByLabelText('Memo (optional)');
       await userEvent.type(memo, 'rent');
-      await userEvent.click(screen.getByRole('button', { name: /^Retry 1 ZEC to Account [12]$/ }));
+      await userEvent.click(screen.getByRole('button', { name: /^Resume payment$/ }));
       await waitFor(() => expect(sendCalls(fetchMock)).toHaveLength(2));
       await userEvent.clear(memo);
       await userEvent.type(memo, 'gift');
@@ -411,8 +444,14 @@ describe('SendDialog', () => {
       <SendDialog open onOpenChange={close} accounts={testAccounts} />,
     );
     await userEvent.click(screen.getByRole('button', { name: 'Send ZEC' }));
-    expect(await screen.findByText(/Not prepared yet/)).toBeInTheDocument();
-    expect(close).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByText('Payments').closest('button')).toHaveAttribute(
+        'aria-label',
+        expect.stringMatching(/1 unresolved/),
+      ),
+    );
+    expect(close).toHaveBeenCalledWith(false);
+    close.mockClear();
     const originalKey = body(fetchMock).idempotency_key;
     first.unmount();
     sessionStorage.clear();
@@ -424,25 +463,33 @@ describe('SendDialog', () => {
         accounts={testAccounts.map((account) => ({ ...account, ironwood_zatoshi: 0n }))}
       />,
     );
-    expect(await screen.findByText(/Ready to broadcast/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/saved payment has these details \(prepared\)/),
+    ).toBeInTheDocument();
     expect(fetchMock.mock.calls.map(([input]) => requestUrl(input))).toContain(
       `/api/v1/activity?idempotency_key=${originalKey}`,
     );
     expect(sendCalls(fetchMock)).toHaveLength(1);
-    await userEvent.clear(screen.getByLabelText('Amount (ZEC)'));
-    await userEvent.type(screen.getByLabelText('Amount (ZEC)'), '2');
-    await userEvent.type(screen.getByLabelText('Memo (optional)'), 'next payment draft');
-    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Resume payment' }));
     await waitFor(() => expect(sendCalls(fetchMock)).toHaveLength(2));
     expect(requestBody(sendCalls(fetchMock)[1]?.[1]).idempotency_key).toBe(originalKey);
     expect(requestBody(sendCalls(fetchMock)[1]?.[1])).toMatchObject({
       amount_zatoshi: 100_000_000,
     });
     expect(requestBody(sendCalls(fetchMock)[1]?.[1]).memo).toBeUndefined();
+    close.mockClear();
+    await userEvent.clear(screen.getByLabelText('Amount (ZEC)'));
+    await userEvent.type(screen.getByLabelText('Amount (ZEC)'), '2');
+    await userEvent.type(screen.getByLabelText('Memo (optional)'), 'next payment draft');
     payment = { ...PENDING, status: 'confirmed' };
-    expect(
-      await screen.findByText('Payment confirmed.', {}, { timeout: 3_000 }),
-    ).toBeInTheDocument();
+    await waitFor(
+      () =>
+        expect(screen.getByText('Payments').closest('button')).toHaveAttribute(
+          'aria-label',
+          expect.stringMatching(/1 confirmed/),
+        ),
+      { timeout: 3_000 },
+    );
     expect(close).not.toHaveBeenCalled();
     expect(screen.getByLabelText('Amount (ZEC)')).toHaveValue('2');
     expect(screen.getByLabelText('Memo (optional)')).toHaveValue('next payment draft');
@@ -470,20 +517,27 @@ describe('SendDialog', () => {
         ? Promise.reject(new TypeError('status offline'))
         : sendImpl(QUOTE, payment)(input, init),
     );
-    renderWithProviders(<SendDialog open onOpenChange={vi.fn()} accounts={testAccounts} />);
+    function Sender() {
+      const [open, setOpen] = useState(true);
+      return <SendDialog open={open} onOpenChange={setOpen} accounts={testAccounts} />;
+    }
+    renderWithProviders(<Sender />);
     await userEvent.click(screen.getByRole('button', { name: 'Send ZEC' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /View payments/ }));
     expect(
       await screen.findByText(/Latest execution error: lightwalletd unavailable/),
     ).toBeInTheDocument();
-    expect(await screen.findByText(/Status unavailable: status offline/)).toBeInTheDocument();
-    expect(screen.queryByText(/Payment failed:/)).not.toBeInTheDocument();
+    expect(await screen.findByText(/Couldn’t check status: status offline/)).toBeInTheDocument();
+    expect(screen.queryByText(/Payment failed\./)).not.toBeInTheDocument();
     const originalKey = body(fetchMock).idempotency_key;
     offline = false;
     payment = { ...PENDING, status: 'failed', last_error: 'Insufficient funds' };
-    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByText('Payment failed: Insufficient funds')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Resume' }));
+    expect(await screen.findAllByText('Insufficient funds')).toHaveLength(2);
     expect(sendCalls(fetchMock)).toHaveLength(2);
     expect(requestBody(sendCalls(fetchMock)[1]?.[1]).idempotency_key).toBe(originalKey);
+    await userEvent.click(screen.getByRole('button', { name: 'New Send' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send ZEC' })).toBeEnabled());
     payment = PENDING;
     await userEvent.click(screen.getByRole('button', { name: 'Send ZEC' }));
@@ -494,26 +548,41 @@ describe('SendDialog', () => {
   it('migrates non-default session details without POST and restores their exact request after restart', async () => {
     const name = 'ths:send:[3,4,"transparent","ironwood","267500001",""]';
     sessionStorage.setItem(name, 'original-legacy-key');
-    fetchMock.mockImplementation(
-      sendImpl(QUOTE, {
-        ...PENDING,
-        from_account: 3,
-        to_account: 4,
-        source_pool: 'transparent',
-        amount_zatoshi: 267_500_001,
-      }),
+    let rejectResume = true;
+    const recovered = sendImpl(QUOTE, {
+      ...PENDING,
+      from_account: 3,
+      to_account: 4,
+      source_pool: 'transparent',
+      amount_zatoshi: 267_500_001,
+    });
+    fetchMock.mockImplementation((input, init) =>
+      requestUrl(input).endsWith('/send') && rejectResume
+        ? Promise.reject(new TypeError('Resume connection lost'))
+        : recovered(input, init),
     );
-    const first = renderWithProviders(
-      <SendDialog open onOpenChange={vi.fn()} accounts={testAccounts} />,
+    const first = renderWithProviders(<></>);
+    await waitFor(() =>
+      expect(screen.getByText('Payments').closest('button')).toHaveAttribute(
+        'aria-label',
+        expect.stringMatching(/1 unresolved/),
+      ),
     );
-    expect(await screen.findByText(/Not prepared yet/)).toBeInTheDocument();
     expect(sendCalls(fetchMock)).toHaveLength(0);
     expect(localStorage.getItem('ths:send:retained:original-legacy-key')).toBe(name);
     first.unmount();
     sessionStorage.clear();
-    renderWithProviders(<SendDialog open onOpenChange={vi.fn()} accounts={testAccounts} />);
-    await userEvent.click(await screen.findByRole('button', { name: 'Retry' }));
+    renderWithProviders(<></>);
+    await userEvent.click(await screen.findByRole('button', { name: /View payments/ }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Resume' }));
     await waitFor(() => expect(sendCalls(fetchMock)).toHaveLength(1));
+    expect(await screen.findByText('Payment not confirmed')).toBeInTheDocument();
+    expect(screen.getByText('Resume connection lost')).toBeInTheDocument();
+    expect(localStorage.getItem('ths:send:retained:original-legacy-key')).toBe(name);
+    rejectResume = false;
+    await userEvent.click(await screen.findByRole('button', { name: 'Resume' }));
+    await waitFor(() => expect(sendCalls(fetchMock)).toHaveLength(2));
+    expect(requestBody(sendCalls(fetchMock)[1]?.[1])).toEqual(body(fetchMock));
     expect(body(fetchMock)).toEqual({
       from_account: 3,
       to_account: 4,

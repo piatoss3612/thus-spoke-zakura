@@ -162,28 +162,25 @@ function retainedPayments(
 }
 
 /** Local state contains caller identity only; server snapshots stay in Query. */
-export function useRetainedPayments(kind: PaymentKind, open: boolean) {
+export function useRetainedPayments(kind: PaymentKind) {
   const [snapshot, setSnapshot] = useState<{
     displayed: PaymentIdentity[];
     retained: PaymentIdentity[];
     error: Error | null;
   }>({ displayed: [], retained: [], error: null });
   useEffect(() => {
-    if (!open) return;
     let mounted = true;
-    const read = (reset = false) => {
+    const read = () => {
       try {
         const retained = retainedPayments(kind);
         if (!mounted) return;
         setSnapshot((previous) => ({
           retained,
-          displayed: reset
-            ? retained
-            : [
-                ...new Map(
-                  [...previous.displayed, ...retained].map((item) => [item.key, item]),
-                ).values(),
-              ],
+          displayed: [
+            ...new Map(
+              [...previous.displayed, ...retained].map((item) => [item.key, item]),
+            ).values(),
+          ],
           error: null,
         }));
       } catch (error) {
@@ -210,7 +207,7 @@ export function useRetainedPayments(kind: PaymentKind, open: boolean) {
             }
           });
         }
-        read(true);
+        read();
       } catch (error) {
         if (mounted) setSnapshot((previous) => ({ ...previous, error: error as Error }));
       }
@@ -223,16 +220,23 @@ export function useRetainedPayments(kind: PaymentKind, open: boolean) {
       window.removeEventListener('storage', update);
       window.removeEventListener(changed, update);
     };
-  }, [kind, open]);
-  // Displayed payments outlive release so a terminal result stays readable.
-  // A rejected payment has no result to show, so drop it once it is released.
-  const dismiss = useCallback((name: string) => {
+  }, [kind]);
+  // Displayed identities outlive storage cleanup so results stay readable.
+  const show = useCallback((identity: PaymentIdentity) => {
+    setSnapshot((previous) => ({
+      ...previous,
+      displayed: [
+        ...new Map([...previous.displayed, identity].map((item) => [item.key, item])).values(),
+      ],
+    }));
+  }, []);
+  const dismissKey = useCallback((key: string) => {
     setSnapshot((previous) => ({
       ...previous,
       displayed: previous.displayed.filter(
-        (item) => item.name !== name || previous.retained.some(({ key }) => key === item.key),
+        (item) => item.key !== key || previous.retained.some((retained) => retained.key === key),
       ),
     }));
   }, []);
-  return { ...snapshot, dismiss };
+  return { ...snapshot, show, dismissKey };
 }

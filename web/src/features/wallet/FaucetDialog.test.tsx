@@ -1,9 +1,13 @@
 import { beforeEach, afterEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { useState } from 'react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient } from '@tanstack/react-query';
 import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders, requestUrl, testAccounts } from '@/test/utils';
+import {
+  renderWithWalletActions as renderWithProviders,
+  requestUrl,
+  testAccounts,
+} from '@/test/utils';
 import { queryKeys, useAccounts, useActivity } from '@/hooks/queries';
 import { api } from '@/lib/api';
 import { FaucetDialog } from './FaucetDialog';
@@ -93,7 +97,7 @@ describe('FaucetDialog', () => {
     renderWithProviders(<FaucetDialog open onOpenChange={close} accounts={testAccounts} />);
     expect(screen.getByLabelText('Amount (ZEC)')).toHaveValue('1');
     await userEvent.click(screen.getByRole('button', { name: 'Add funds' }));
-    expect(await screen.findByText('Submitting payment…')).toBeInTheDocument();
+    expect(await screen.findAllByText('Submitting payment…')).toHaveLength(1);
     await userEvent.clear(screen.getByLabelText('Amount (ZEC)'));
     await userEvent.type(screen.getByLabelText('Amount (ZEC)'), '2');
     await act(() => {
@@ -101,7 +105,12 @@ describe('FaucetDialog', () => {
       confirm(new Response(JSON.stringify(activity)));
       return response;
     });
-    expect(await screen.findByText('Payment confirmed.')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByText('Payments').closest('button')).toHaveAttribute(
+        'aria-label',
+        expect.stringMatching(/1 confirmed/),
+      ),
+    );
     expect(close).not.toHaveBeenCalled();
     expect(screen.getByLabelText('Amount (ZEC)')).toHaveValue('2');
     expect(screen.getAllByText('Funded Account 1')).toHaveLength(1);
@@ -113,7 +122,7 @@ describe('FaucetDialog', () => {
       let lost = true;
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
         if (requestUrl(input).includes('/activity?')) return Promise.resolve(new Response('[]'));
-        if (lost) {
+        if (lost && requestUrl(input).endsWith('/faucet')) {
           lost = false;
           return Promise.reject(new TypeError('response lost'));
         }
@@ -132,9 +141,7 @@ describe('FaucetDialog', () => {
       const second = renderWithProviders(
         <FaucetDialog open onOpenChange={vi.fn()} accounts={testAccounts} />,
       );
-      await userEvent.click(
-        await screen.findByRole('button', { name: 'Retry 1 ZEC to Account 1' }),
-      );
+      await userEvent.click(await screen.findByRole('button', { name: 'Resume payment' }));
       await waitFor(() => expect(posts(fetchSpy)).toHaveLength(2));
 
       expect(key(posts(fetchSpy)[0])).toBe(key(posts(fetchSpy)[1]));
@@ -151,7 +158,7 @@ describe('FaucetDialog', () => {
     },
   );
 
-  it('keeps a pending payment in the dialog and retries with its original key', async () => {
+  it('keeps pending status outside the dialog and resumes with its original key', async () => {
     const onOpenChange = vi.fn();
     let payment = { ...activity, status: 'broadcast', block_hash: null as string | null };
     const fetchSpy = vi
@@ -168,22 +175,38 @@ describe('FaucetDialog', () => {
     );
 
     await userEvent.click(screen.getByRole('button', { name: 'Add funds' }));
-    expect(await screen.findByText(/Waiting for confirmation/)).toBeInTheDocument();
-    expect(onOpenChange).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByText('Payments').closest('button')).toHaveAttribute(
+        'aria-label',
+        expect.stringMatching(/1 unresolved/),
+      ),
+    );
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    onOpenChange.mockClear();
+    await userEvent.click(screen.getByRole('button', { name: 'Resume payment' }));
+    await waitFor(() => expect(posts(fetchSpy)).toHaveLength(2));
+    expect(key(posts(fetchSpy)[1])).toBe(key(posts(fetchSpy)[0]));
+    onOpenChange.mockClear();
     const amount = screen.getByLabelText('Amount (ZEC)');
     await userEvent.clear(amount);
     await userEvent.type(amount, '2');
     expect(screen.getByRole('button', { name: 'Add funds' })).toBeInTheDocument();
-    expect(screen.getByText(/Waiting for confirmation/)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    await waitFor(() => expect(posts(fetchSpy)).toHaveLength(2));
-    expect(key(posts(fetchSpy)[1])).toBe(key(posts(fetchSpy)[0]));
+    expect(screen.getByText('Payments').closest('button')).toHaveAttribute(
+      'aria-label',
+      expect.stringMatching(/1 unresolved/),
+    );
+
     first.unmount();
     sessionStorage.clear();
     const second = renderWithProviders(
       <FaucetDialog open onOpenChange={onOpenChange} accounts={testAccounts} />,
     );
-    expect(await screen.findByText(/Waiting for confirmation/)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByText('Payments').closest('button')).toHaveAttribute(
+        'aria-label',
+        expect.stringMatching(/1 unresolved/),
+      ),
+    );
     expect(fetchSpy.mock.calls.map(([input]) => requestUrl(input))).toContain(
       `/api/v1/activity?idempotency_key=${key(posts(fetchSpy)[0])}`,
     );
@@ -217,15 +240,19 @@ describe('FaucetDialog', () => {
       );
     }
     const third = renderWithProviders(
-      <QueryClientProvider client={client}>
+      <>
         <FaucetDialog open onOpenChange={onOpenChange} accounts={testAccounts} />
         <WalletSnapshot />
-      </QueryClientProvider>,
+      </>,
+      client,
     );
-    expect(await screen.findByText('Payment confirmed.')).toBeInTheDocument();
-    expect(
-      await screen.findByText(/Allow site storage, then reopen this dialog/),
-    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByText('Payments').closest('button')).toHaveAttribute(
+        'aria-label',
+        expect.stringMatching(/1 confirmed/),
+      ),
+    );
+    expect(await screen.findByText(/Previous payment finished/)).toBeInTheDocument();
     await waitFor(() => {
       expect(screen.getByLabelText('Account balance')).toHaveTextContent('600000000');
       expect(screen.getByLabelText('Recent payment')).toHaveTextContent('confirmed');
@@ -234,7 +261,12 @@ describe('FaucetDialog', () => {
     blockedStorage.mockRestore();
     third.unmount();
     renderWithProviders(<FaucetDialog open onOpenChange={onOpenChange} accounts={testAccounts} />);
-    expect(await screen.findByText('Payment confirmed.')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByText('Payments').closest('button')).toHaveAttribute(
+        'aria-label',
+        expect.stringMatching(/1 confirmed/),
+      ),
+    );
     await waitFor(() => expect(localStorage.getItem('ths:faucet:1:ironwood:100000000')).toBeNull());
     expect(onOpenChange).not.toHaveBeenCalled();
     expect(screen.getByRole('dialog')).toBeInTheDocument();
@@ -256,7 +288,7 @@ describe('FaucetDialog', () => {
     expect(screen.getByRole('button', { name: 'Add funds' })).toBeDisabled();
 
     await userEvent.keyboard('{Enter}');
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(posts(fetchSpy)).toHaveLength(0);
     fetchSpy.mockRestore();
   });
 
