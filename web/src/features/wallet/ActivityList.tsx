@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { AlertTriangle, ArrowDownToLine, ArrowRight } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -35,6 +36,8 @@ function PoolLabel({ pool }: { pool: Activity['source_pool'] }) {
 }
 
 function ActivityRow({ activity, index }: { activity: Activity; index: number }) {
+  const id = useId();
+  const errorId = activity.last_error ? id : undefined;
   const isFaucet = activity.kind === 'faucet';
   const transactionPath = activity.txid ? `/explorer/tx/${activity.txid}` : null;
   const transfer = isFaucet
@@ -54,7 +57,7 @@ function ActivityRow({ activity, index }: { activity: Activity; index: number })
             '[&:has(+tr:hover)]:bg-accent-soft [&:hover+tr]:bg-accent-soft border-b-0',
         )}
       >
-        <td>
+        <td aria-describedby={errorId}>
           <div className="flex items-center gap-2.5">
             <span
               className={cn(
@@ -70,7 +73,11 @@ function ActivityRow({ activity, index }: { activity: Activity; index: number })
               )}
             </span>
             {transactionPath ? (
-              <Link to={transactionPath} className="min-w-0 truncate font-semibold hover:underline">
+              <Link
+                to={transactionPath}
+                aria-describedby={errorId}
+                className="min-w-0 truncate font-semibold hover:underline"
+              >
                 {transfer}
               </Link>
             ) : (
@@ -121,6 +128,7 @@ function ActivityRow({ activity, index }: { activity: Activity; index: number })
         >
           <td colSpan={COLUMNS.length} className="px-5 pt-0 pb-3.5">
             <p
+              id={errorId}
               className={cn(
                 'flex items-start gap-1.5 pl-[34px] text-[11px] wrap-anywhere',
                 activity.status === 'failed' ? 'text-negative' : 'text-warning',

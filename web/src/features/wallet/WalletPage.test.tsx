@@ -41,10 +41,15 @@ function mockWalletApis(status = 'confirmed') {
           source_pool: 'ironwood',
           destination_pool: 'ironwood',
           amount_zatoshi: 500_000_000,
-          txid: status === 'confirmed' ? TXID : '',
+          txid: status === 'failed' ? '' : TXID,
           block_hash: 'cd'.repeat(32),
           status,
-          last_error: status === 'failed' ? 'Insufficient funds' : null,
+          last_error:
+            status === 'failed'
+              ? 'Insufficient funds'
+              : status === 'broadcast'
+                ? 'Lightwalletd unavailable'
+                : null,
           created_at: '2026-09-18 10:00:00',
         },
       ]);
@@ -90,13 +95,29 @@ describe('WalletPage', () => {
     expect(tx.textContent?.includes('…')).toBe(true);
   });
 
-  it('counts a failed unprepared payment without linking to an empty txid', async () => {
-    renderWallet('failed');
-    expect(await screen.findByText('1 event')).toBeInTheDocument();
-    const row = screen.getByText('Not prepared').closest('tr')!;
-    const detail = row.nextElementSibling as HTMLElement;
-    expect(within(detail).getByText('Failed: Insufficient funds')).toBeInTheDocument();
-    expect(within(detail).queryByRole('link')).not.toBeInTheDocument();
-    expect(within(row).queryByRole('link')).not.toBeInTheDocument();
-  });
+  it.each(['failed', 'broadcast'])(
+    'describes %s payment errors and links only prepared transactions',
+    async (status) => {
+      renderWallet(status);
+      expect(await screen.findByText('1 event')).toBeInTheDocument();
+      const transfer = screen.getByRole('cell', { name: 'Faucet → Account 1' });
+      const row = transfer.closest('tr')!;
+      const detail = row.nextElementSibling as HTMLElement;
+      const message =
+        status === 'failed'
+          ? 'Failed: Insufficient funds'
+          : 'Latest execution error: Lightwalletd unavailable';
+      expect(within(detail).getByText(message)).toBeInTheDocument();
+      expect(transfer).toHaveAccessibleDescription(message);
+      expect(within(detail).queryByRole('link')).not.toBeInTheDocument();
+      if (status === 'failed') {
+        expect(within(row).getByText('Not prepared')).toBeInTheDocument();
+        expect(within(row).queryByRole('link')).not.toBeInTheDocument();
+      } else {
+        const link = within(transfer).getByRole('link');
+        expect(link).toHaveAccessibleDescription(message);
+        expect(link).toHaveAttribute('href', `/explorer/tx/${TXID}`);
+      }
+    },
+  );
 });
