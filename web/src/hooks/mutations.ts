@@ -64,12 +64,13 @@ function operationKey<T>(
 export type PaymentResult = { activity: Activity; key: string; cleanupError?: string };
 type PaymentSubmission<T> = { variables: T; key: string | undefined; error?: unknown };
 type PaymentCallbacks<T> = {
-  onError?: (error: Error, variables: T) => void;
+  onError?: (error: Error, variables: T, key: string | undefined) => void;
   onSuccess?: (result: PaymentResult, variables: T) => void;
 };
 type PaymentLifecycle = {
   onRetained: (identity: PaymentIdentity) => void;
   onRejected: (identity: PaymentIdentity) => void;
+  onError: (error: Error, key: string | undefined) => void;
 };
 
 function usePaymentMutation<T extends SendVariables | FaucetVariables>(
@@ -104,6 +105,7 @@ function usePaymentMutation<T extends SendVariables | FaucetVariables>(
       if ('error' in submission) throw submission.error;
       const { variables, key } = submission;
       const identity = await retainPayment(kind, variables, ownedKeys.current, key);
+      submission.key = identity.key;
       setPendingKey(identity.key);
       // Publish before POST: an immediate terminal response can release storage.
       lifecycle?.onRetained(identity);
@@ -117,11 +119,13 @@ function usePaymentMutation<T extends SendVariables | FaucetVariables>(
         if (isPaymentRejection(error) && !(await api.payment(identity.key))) {
           await clearPayment(identity, ownedKeys.current);
           lifecycle?.onRejected(identity);
+          submission.key = undefined;
         }
         throw error;
       }
     },
     retry: false,
+    onError: (error, submission) => lifecycle?.onError(error, submission.key),
     onSuccess: async (result, { variables }) => {
       const { activity, key } = result;
       // A lookup started before acceptance must not overwrite this response.
@@ -163,8 +167,8 @@ function usePaymentMutation<T extends SendVariables | FaucetVariables>(
     }
   };
   const callbacks = (options?: PaymentCallbacks<T>) => ({
-    onError: (error: Error, { variables }: PaymentSubmission<T>) =>
-      options?.onError?.(error, variables),
+    onError: (error: Error, { variables, key }: PaymentSubmission<T>) =>
+      options?.onError?.(error, variables, key),
     onSuccess: (result: PaymentResult, { variables }: PaymentSubmission<T>) =>
       options?.onSuccess?.(result, variables),
   });

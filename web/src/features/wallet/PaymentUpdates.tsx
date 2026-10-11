@@ -3,8 +3,7 @@ import { useQueries } from '@tanstack/react-query';
 import { AlertTriangle, Clock3, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
-import { useToast } from '@/components/ui/toast-context';
-import { api, errorMessage, isPaymentRejection } from '@/lib/api';
+import { api, errorMessage } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { queryKeys } from '@/hooks/queries';
 import type { PaymentIdentity } from '@/hooks/payment-identity';
@@ -22,14 +21,28 @@ const LABELS: Record<PaymentFilter, string> = {
 };
 
 export function PaymentUpdates() {
-  const { send, faucet, savedSend, savedFaucet, isRestored } = useWalletPayments();
+  const {
+    send,
+    faucet,
+    savedSend,
+    savedFaucet,
+    isRestored,
+    viewedPayment,
+    viewPayment,
+    closePayments,
+  } = useWalletPayments();
   const { openSend, openFaucet } = useWalletActions();
-  const toast = useToast();
   const identities = [...savedSend.displayed, ...savedFaucet.displayed];
-  const [open, setOpen] = useState(false);
+  const open = viewedPayment !== null;
   // null selects All without announcing results when the panel first opens.
-  const [filter, setFilter] = useState<PaymentFilter | null>(null);
+  const [selection, setSelection] = useState<{
+    view: typeof viewedPayment;
+    filter: PaymentFilter;
+  } | null>(null);
+  // Each open request starts at All, including a link to a previously hidden row.
+  const filter = selection?.view === viewedPayment ? selection.filter : null;
   const selected = filter ?? 'all';
+  const setFilter = (value: PaymentFilter) => setSelection({ view: viewedPayment, filter: value });
   const [visibleKeys, setVisibleKeys] = useState<string[]>([]);
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -94,7 +107,7 @@ export function PaymentUpdates() {
     requestAnimationFrame(() => focusNext(identity));
   };
   const startNew = (identity: PaymentIdentity) => {
-    setOpen(false);
+    closePayments();
     // Use a connected opener so closing the next form returns focus to the
     // summary rather than the row removed when this panel closes.
     requestAnimationFrame(() => {
@@ -120,8 +133,7 @@ export function PaymentUpdates() {
               .sort((a, b) => priority(a.status) - priority(b.status))
               .map(({ identity }) => identity.key),
           );
-          setFilter(null);
-          setOpen(true);
+          viewPayment();
         }}
       >
         <StatusIcon
@@ -138,7 +150,7 @@ export function PaymentUpdates() {
       <Dialog
         open={open}
         onOpenChange={(next) => {
-          setOpen(next);
+          if (!next) closePayments();
           if (!next && !identities.length && !errors.length) {
             requestAnimationFrame(() => {
               const heading = document.querySelector<HTMLElement>('main h1');
@@ -155,6 +167,7 @@ export function PaymentUpdates() {
         }
         className="flex max-h-[calc(100dvh-36px)] w-[min(540px,calc(100vw-36px))] flex-col overflow-y-hidden"
         bodyClassName="relative flex min-h-0 flex-col [&>p]:shrink-0"
+        fallbackFocus={trigger}
       >
         {identities.length > 0 && (
           <div
@@ -266,21 +279,15 @@ export function PaymentUpdates() {
             container={container}
             hidden={!includedKeys.has(identity.key)}
             onHiddenFocus={() => focusNext(identity)}
+            focusRequest={viewedPayment?.key === identity.key ? viewedPayment : null}
+            onView={() => viewPayment(identity.key)}
             identity={identity}
             restored={isRestored(identity.key)}
             pendingKey={operation.pendingKey}
             busy={send.isPending || faucet.isPending}
             claimAnnouncement={operation.claimAnnouncement}
             onTerminal={operation.clear}
-            onResume={(item) =>
-              operation.resume(item, {
-                onError: (error) =>
-                  toast.error(
-                    isPaymentRejection(error) ? 'Payment rejected' : 'Payment not confirmed',
-                    errorMessage(error),
-                  ),
-              })
-            }
+            onResume={(item) => operation.resume(item)}
             onDismiss={() => dismiss(identity)}
             onNew={() => startNew(identity)}
           />

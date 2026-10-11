@@ -9,6 +9,8 @@ import { Button } from '@/components/ui/Button';
 import { useSend, useFaucet } from '@/hooks/mutations';
 import { useRetainedPayments, type PaymentIdentity } from '@/hooks/payment-identity';
 import { WalletPaymentsContext } from './payment-context';
+import { useToast } from '@/components/ui/toast-context';
+import { errorMessage, isPaymentRejection } from '@/lib/api';
 
 type OpenDialog = 'send' | 'faucet' | 'mine' | null;
 
@@ -17,6 +19,9 @@ type OpenDialog = 'send' | 'faucet' | 'mine' | null;
  * them without threading state through the tree.
  */
 export function WalletActionsProvider({ children }: { children: ReactNode }) {
+  const toast = useToast();
+  const [viewedPayment, setViewedPayment] = useState<{ key: string | null } | null>(null);
+  const viewPayment = (key?: string) => setViewedPayment({ key: key ?? null });
   const [dialog, setDialog] = useState<OpenDialog>(null);
   const [faucetAccount, setFaucetAccount] = useState<number | undefined>(undefined);
   const [sendAccount, setSendAccount] = useState<number | undefined>(undefined);
@@ -32,6 +37,13 @@ export function WalletActionsProvider({ children }: { children: ReactNode }) {
     },
     onRejected: (identity: PaymentIdentity) => {
       (identity.kind === 'send' ? savedSend : savedFaucet).dismissKey(identity.key);
+    },
+    onError: (error: Error, key: string | undefined) => {
+      toast.error(
+        isPaymentRejection(error) ? 'Payment rejected' : 'Payment not confirmed',
+        errorMessage(error),
+        key ? { label: 'View payment', onClick: () => viewPayment(key) } : undefined,
+      );
     },
   };
   const send = useSend(lifecycle);
@@ -70,6 +82,9 @@ export function WalletActionsProvider({ children }: { children: ReactNode }) {
           savedSend,
           savedFaucet,
           isRestored: (key) => !liveKeys.current.has(key),
+          viewedPayment,
+          viewPayment,
+          closePayments: () => setViewedPayment(null),
         }}
       >
         {children}

@@ -32,6 +32,8 @@ export function PaymentStatus({
   container,
   hidden,
   onHiddenFocus,
+  focusRequest,
+  onView,
 }: {
   identity: PaymentIdentity;
   restored: boolean;
@@ -45,6 +47,8 @@ export function PaymentStatus({
   container: HTMLElement | null;
   hidden: boolean;
   onHiddenFocus: () => void;
+  focusRequest: object | null;
+  onView: () => void;
 }) {
   const status = usePaymentStatus(identity.key, true);
   const activity = status.data;
@@ -55,6 +59,7 @@ export function PaymentStatus({
   const article = useRef<HTMLElement>(null);
   const focused = useRef(false);
   const recoveryFocused = useRef(false);
+  const focusedRequest = useRef<object | null>(null);
   const handled = useRef(false);
   const mounted = useRef(true);
   const [cleanupError, setCleanupError] = useState<string | null>(null);
@@ -87,6 +92,7 @@ export function PaymentStatus({
         toast.error(
           'Payment failed',
           activity?.last_error ?? 'The server marked this payment as failed.',
+          { label: 'View payment', onClick: onView },
         );
       }
     }
@@ -102,9 +108,20 @@ export function PaymentStatus({
     destination,
     identity,
     onTerminal,
+    onView,
     toast,
     variables.amount_zatoshi,
   ]);
+  useLayoutEffect(() => {
+    if (!container || hidden || !focusRequest || focusedRequest.current === focusRequest) return;
+    // Let Radix finish mounting the focus scope, including over an open form.
+    const frame = requestAnimationFrame(() => {
+      focusedRequest.current = focusRequest;
+      heading.current?.focus({ preventScroll: true });
+      article.current?.scrollIntoView({ block: 'nearest' });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [container, hidden, focusRequest]);
   useLayoutEffect(() => {
     if (
       hidden &&
@@ -177,7 +194,7 @@ export function PaymentStatus({
       ref={article}
       hidden={hidden}
       data-payment-key={identity.key}
-      className="border-line border-b px-4 py-3 text-[12px] wrap-anywhere last:border-b-0"
+      className="border-line focus-within:bg-accent-soft border-b px-4 py-3 text-[12px] wrap-anywhere last:border-b-0"
       onFocusCapture={(event) => {
         focused.current = true;
         recoveryFocused.current =

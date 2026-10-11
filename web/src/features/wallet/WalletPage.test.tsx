@@ -310,6 +310,73 @@ describe('WalletPage', () => {
     expect(post).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['send', 'faucet'] as const)(
+    'links a late %s error to its saved payment without submitting again',
+    async (kind) => {
+      Object.assign(Element.prototype, {
+        scrollIntoView: vi.fn(),
+        hasPointerCapture: () => false,
+        releasePointerCapture: () => undefined,
+      });
+      mockWalletApis();
+      vi.spyOn(api, 'accounts').mockResolvedValue(testAccounts);
+      const payments = new Map([
+        ['other-confirmed', savedFaucet('other-confirmed', 4, 'confirmed')],
+        ['other-failed', savedFaucet('other-failed', 5, 'failed')],
+      ]);
+      vi.spyOn(api, 'payment').mockImplementation((key) =>
+        Promise.resolve(payments.get(key) ?? null),
+      );
+      vi.spyOn(api, 'sendQuote').mockResolvedValue({
+        available_zatoshi: 500_000_000n,
+        fee_zatoshi: 10_000n,
+        max_zatoshi: 499_990_000n,
+      });
+      let reject!: (error: Error) => void;
+      const response = new Promise<Activity>((_resolve, fail) => {
+        reject = fail;
+      });
+      const post = vi.spyOn(api, kind).mockReturnValue(response);
+      renderWithWalletActions(<WalletPage />);
+      const trigger = await screen.findByRole('button', { name: /View payments/ });
+      await userEvent.click(trigger);
+      await userEvent.click(await screen.findByRole('button', { name: 'Failed 1' }));
+      await userEvent.keyboard('{Escape}');
+      await userEvent.click(
+        screen.getByRole('button', {
+          name: kind === 'send' ? 'Send ZEC' : 'Fund Account 1',
+        }),
+      );
+      const submit = within(screen.getByRole('dialog')).getByRole('button', {
+        name: kind === 'send' ? 'Send ZEC' : 'Add funds',
+      });
+      await waitFor(() => expect(submit).toBeEnabled());
+      await userEvent.click(submit);
+      await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+      const key = post.mock.calls[0]![0].idempotency_key;
+      await userEvent.keyboard('{Escape}');
+      await act(async () => {
+        reject(new Error('Connection lost'));
+        await response.catch(() => undefined);
+      });
+      expect(await screen.findByText('Payment not confirmed')).toBeInTheDocument();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: 'View payment' }));
+      const updates = screen.getByRole('region', { name: 'Payment updates' });
+      const heading = within(updates).getByRole('heading', {
+        name: kind === 'send' ? 'Account 1 → Account 2 · 1 ZEC' : 'Faucet → Account 1 · 1 ZEC',
+      });
+      await waitFor(() => expect(heading).toHaveFocus());
+      expect(heading.closest('article')).toHaveAttribute('data-payment-key', key);
+      expect(screen.getByRole('button', { name: 'All 3' })).toHaveAttribute('aria-pressed', 'true');
+      expect(within(updates).getByText('Unknown')).toBeInTheDocument();
+      expect(localStorage.getItem(`ths:${kind}:retained:${key}`)).not.toBeNull();
+      expect(post).toHaveBeenCalledTimes(1);
+      await userEvent.keyboard('{Escape}');
+      await waitFor(() => expect(trigger).toHaveFocus());
+    },
+  );
+
   it('uses the wrapping page rhythm the explorer and network surfaces share', async () => {
     const { container } = renderWallet();
     await waitFor(() => expect(screen.getByText('Account 1')).toBeInTheDocument());

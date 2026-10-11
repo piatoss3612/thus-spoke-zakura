@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { useState } from 'react';
-import { act, screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
   renderWithWalletActions as renderWithProviders,
@@ -337,6 +337,7 @@ describe('SendDialog', () => {
       const name = 'ths:send:[1,2,"ironwood","ironwood","100000000",null]';
       if (lookup === 'absent') {
         expect(localStorage.length).toBe(0);
+        expect(screen.queryByRole('button', { name: 'View payment' })).not.toBeInTheDocument();
         await waitFor(() =>
           expect(screen.queryByText(/Payment outcome unknown/)).not.toBeInTheDocument(),
         );
@@ -356,6 +357,7 @@ describe('SendDialog', () => {
   );
 
   it('keeps a conflicting payment retained for an explicit retry', async () => {
+    Object.assign(Element.prototype, { scrollIntoView: vi.fn() });
     fetchMock.mockImplementation((input, init) =>
       requestUrl(input).endsWith('/send')
         ? Promise.resolve(
@@ -378,6 +380,16 @@ describe('SendDialog', () => {
       ),
     );
     expect(screen.getByRole('button', { name: 'Resume payment' })).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText('Memo (optional)'), 'next draft');
+    const form = screen.getByRole('dialog', { name: 'Send ZEC' });
+    const opener = within(form).getByRole('button', { name: 'View payment' });
+    await userEvent.click(opener);
+    const panel = screen.getByRole('dialog', { name: 'Payments' });
+    await waitFor(() => expect(within(panel).getByRole('heading', { level: 3 })).toHaveFocus());
+    expect(sendCalls(fetchMock)).toHaveLength(1);
+    await userEvent.click(within(panel).getByRole('button', { name: 'Close dialog' }));
+    expect(screen.getByLabelText('Memo (optional)')).toHaveValue('next draft');
+    await waitFor(() => expect(opener).toHaveFocus());
   });
 
   it.each([
@@ -506,6 +518,11 @@ describe('SendDialog', () => {
   });
 
   it('keeps read errors distinct from execution failure and requires a deliberate new payment', async () => {
+    Object.assign(Element.prototype, {
+      scrollIntoView: vi.fn(),
+      hasPointerCapture: () => false,
+      releasePointerCapture: () => undefined,
+    });
     let payment: typeof PENDING = {
       ...PENDING,
       status: 'broadcast',
@@ -535,6 +552,17 @@ describe('SendDialog', () => {
     payment = { ...PENDING, status: 'failed', last_error: 'Insufficient funds' };
     await userEvent.click(screen.getByRole('button', { name: 'Resume' }));
     expect(await screen.findAllByText('Insufficient funds')).toHaveLength(2);
+    await userEvent.click(screen.getByRole('button', { name: 'Unresolved 0' }));
+    expect(
+      within(screen.getByRole('region', { name: 'Payment updates' })).getByText(
+        'No unresolved payments.',
+      ),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Close dialog' }));
+    await userEvent.click(screen.getByRole('button', { name: 'View payment' }));
+    const updates = screen.getByRole('region', { name: 'Payment updates' });
+    await waitFor(() => expect(within(updates).getByRole('heading')).toHaveFocus());
+    expect(within(updates).getByText('Failed')).toBeInTheDocument();
     expect(sendCalls(fetchMock)).toHaveLength(2);
     expect(requestBody(sendCalls(fetchMock)[1]?.[1]).idempotency_key).toBe(originalKey);
     await userEvent.click(screen.getByRole('button', { name: 'New Send' }));

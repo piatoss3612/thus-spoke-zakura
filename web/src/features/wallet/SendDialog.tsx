@@ -6,7 +6,7 @@ import { Dialog } from '@/components/ui/Dialog';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import { useToast } from '@/components/ui/toast-context';
-import { errorMessage, isPaymentRejection, type Account } from '@/lib/api';
+import { errorMessage, type Account } from '@/lib/api';
 import { formatZec, formatZecAmount } from '@/lib/money';
 import { type PaymentResult, type SendVariables } from '@/hooks/mutations';
 import { paymentName, type PaymentIdentity } from '@/hooks/payment-identity';
@@ -45,11 +45,16 @@ export function SendDialog({
     savedSend: payments,
     send: sendOperation,
     faucet: faucetOperation,
+    viewPayment,
   } = useWalletPayments();
   const busy = sendOperation.isPending || faucetOperation.isPending;
   const mounted = useRef(true);
   const [submittedHere, setSubmittedHere] = useState(false);
-  const [receipt, setReceipt] = useState<{ text: string; kind: 'accepted' | 'error' } | null>(null);
+  const [receipt, setReceipt] = useState<{
+    text: string;
+    kind: 'accepted' | 'error';
+    key?: string | undefined;
+  } | null>(null);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -97,14 +102,9 @@ export function SendDialog({
       `${formatZecAmount(activity.amount_zatoshi)} confirmed.`,
     );
   };
-  const failed = (error: Error) => {
+  const failed = (error: Error, _variables: SendVariables, key: string | undefined) => {
     if (!mounted.current) return;
-    setReceipt({ text: errorMessage(error), kind: 'error' });
-    if (isPaymentRejection(error)) {
-      toast.error('Payment rejected', errorMessage(error));
-    } else {
-      toast.error('Payment not confirmed', errorMessage(error));
-    }
+    setReceipt({ text: errorMessage(error), kind: 'error', key });
   };
   // A direct confirmation finishes only the submitted draft. Inputs remain
   // editable during the POST, and a later confirmation must preserve edits.
@@ -117,6 +117,7 @@ export function SendDialog({
         setReceipt({
           text: `Payment failed: ${result.activity.last_error ?? 'The server rejected this payment.'}`,
           kind: 'error',
+          key: result.key,
         });
         return;
       }
@@ -220,7 +221,11 @@ export function SendDialog({
         ) : (
           <PaymentWarning role="alert" className="mb-3">
             <p>{receipt.text}</p>
-            <p>The payment updates section shows any saved request.</p>
+            {receipt.key && (
+              <Button size="sm" className="mt-2" onClick={() => viewPayment(receipt.key)}>
+                View payment
+              </Button>
+            )}
           </PaymentWarning>
         ))}
       {match && (
