@@ -87,11 +87,15 @@ export function SendDialog({
     amount_zatoshi: values.amount,
     ...(values.memo === '' ? {} : { memo: values.memo }),
   });
-  const match = current.success
-    ? payments.retained.find(
-        (item) => item.name === paymentName('send', variablesFor(current.data)),
-      )
-    : undefined;
+  // A blank field represents both absent and explicit empty saved memos.
+  // Compare their form values here; Resume still sends the original identity.
+  const formName = (variables: SendVariables) =>
+    paymentName('send', { ...variables, memo: variables.memo ?? '' });
+  const retainedFor = (variables: SendVariables) =>
+    payments.retained.find(
+      (item) => item.kind === 'send' && formName(item.variables) === formName(variables),
+    );
+  const match = current.success ? retainedFor(variablesFor(current.data)) : undefined;
   const matchStatus = usePaymentStatus(match?.key ?? '', Boolean(match));
   const matchTerminal = isTerminalPayment(matchStatus.data);
   const retryLabel = match && !matchTerminal ? `Resume payment` : null;
@@ -123,10 +127,7 @@ export function SendDialog({
       }
       if (result.cleanupError) return;
       const draft = sendSchema.safeParse(form.getValues());
-      if (
-        !draft.success ||
-        paymentName('send', variablesFor(draft.data)) !== paymentName('send', variables)
-      ) {
+      if (!draft.success || formName(variablesFor(draft.data)) !== formName(variables)) {
         setReceipt({
           text: `Payment ${result.activity.status === 'confirmed' ? 'confirmed' : 'accepted'}. Your draft is unchanged. View status in Payments.`,
           kind: 'accepted',
@@ -175,7 +176,7 @@ export function SendDialog({
     setSubmittedHere(true);
     setReceipt(null);
     const variables = variablesFor(values);
-    const retained = payments.retained.find((item) => item.name === paymentName('send', variables));
+    const retained = retainedFor(variables);
     if (retained) {
       send.resume(retained, submitted);
       return;
