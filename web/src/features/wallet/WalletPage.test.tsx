@@ -94,7 +94,9 @@ describe('WalletPage', () => {
     renderWallet('failed');
     expect(await screen.findByText('1 event')).toBeInTheDocument();
     const row = screen.getByText('Not prepared').closest('tr')!;
-    expect(within(row).getByText('Failed: Insufficient funds')).toBeInTheDocument();
+    const detail = row.nextElementSibling as HTMLElement;
+    expect(within(detail).getByText('Failed: Insufficient funds')).toBeInTheDocument();
+    expect(within(detail).queryByRole('link')).not.toBeInTheDocument();
     expect(within(row).queryByRole('link')).not.toBeInTheDocument();
   });
 });

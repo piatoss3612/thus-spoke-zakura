@@ -59,7 +59,7 @@ describe('FaucetDialog', () => {
     expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true);
   });
 
-  it('closes on Escape', async () => {
+  it('closes on Escape and restores focus to its opener', async () => {
     function Harness() {
       const [open, setOpen] = useState(false);
       return (
@@ -75,6 +75,7 @@ describe('FaucetDialog', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     await userEvent.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(opener).toHaveFocus());
   });
 
   it('defaults to 1 ZEC and keeps an edited draft when its response confirms', async () => {

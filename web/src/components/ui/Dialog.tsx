@@ -1,12 +1,11 @@
 import * as RadixDialog from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useRef, type ReactNode } from 'react';
 import { cn } from '@/lib/cn';
 
 /**
- * Wraps Radix Dialog rather than reimplementing it. The previous modal was a
- * bare div: no focus trap, no Escape handling, no focus restoration, and no
- * `role="dialog"`/`aria-modal`. All of that is handled here by construction.
+ * Uses Radix for modal semantics and focus trapping. Wallet actions open the
+ * dialog without a Radix Trigger, so remember the focused opener ourselves.
  */
 export function Dialog({
   open,
@@ -25,11 +24,21 @@ export function Dialog({
   children: ReactNode;
   className?: string;
 }) {
+  const opener = useRef<HTMLElement | null>(null);
   return (
     <RadixDialog.Root open={open} onOpenChange={onOpenChange}>
       <RadixDialog.Portal>
         <RadixDialog.Overlay className="bg-ink/35 animate-pop fixed inset-0 z-40" />
         <RadixDialog.Content
+          onOpenAutoFocus={() => {
+            if (document.activeElement instanceof HTMLElement) {
+              opener.current = document.activeElement;
+            }
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            if (opener.current?.isConnected) opener.current.focus();
+          }}
           className={cn(
             'fixed top-1/2 left-1/2 z-50 w-[min(430px,calc(100vw-36px))] -translate-x-1/2 -translate-y-1/2',
             'xp-window animate-pop rounded-xs shadow-(--shadow-modal)',
