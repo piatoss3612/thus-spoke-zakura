@@ -2,7 +2,14 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { renderWithProviders, requestUrl, testAccounts } from '@/test/utils';
+import { QueryClient } from '@tanstack/react-query';
+import {
+  renderWithProviders,
+  renderWithWalletActions,
+  requestUrl,
+  testAccounts,
+} from '@/test/utils';
+import { queryKeys } from '@/hooks/queries';
 import { api, type Activity } from '@/lib/api';
 import { PaymentUpdates } from './PaymentUpdates';
 import { WalletActionsProvider } from './WalletActions';
@@ -79,6 +86,32 @@ function renderWallet(status = 'confirmed') {
   );
 }
 
+function savedFaucet(
+  key: string,
+  account: number,
+  status: Activity['status'] | null,
+): Activity | null {
+  const name = `ths:faucet:${account}:ironwood:500000000`;
+  localStorage.setItem(name, key);
+  localStorage.setItem(`ths:faucet:retained:${key}`, name);
+  return status === null
+    ? null
+    : {
+        id: key,
+        kind: 'faucet',
+        from_account: null,
+        to_account: account,
+        source_pool: 'ironwood',
+        destination_pool: 'ironwood',
+        amount_zatoshi: 500_000_000n,
+        txid: status === 'confirmed' ? TXID : '',
+        block_hash: null,
+        status,
+        last_error: status === 'failed' ? 'Insufficient funds' : null,
+        created_at: '2026-10-11 00:00:00',
+      };
+}
+
 beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
@@ -134,6 +167,84 @@ describe('WalletPage', () => {
       }
     },
   );
+
+  it('filters results without stopping hidden checks or clearing hidden results', async () => {
+    mockWalletApis();
+    const payments = new Map([
+      ['pending-key', savedFaucet('pending-key', 1, 'broadcast')],
+      ['confirmed-key', savedFaucet('confirmed-key', 2, 'confirmed')],
+      ['failed-key', savedFaucet('failed-key', 3, 'failed')],
+      ['unknown-key', savedFaucet('unknown-key', 4, null)],
+    ]);
+    const lookup = vi
+      .spyOn(api, 'payment')
+      .mockImplementation((key) => Promise.resolve(payments.get(key) ?? null));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithWalletActions(<WalletPage />, client);
+    await userEvent.click(await screen.findByRole('button', { name: /View payments/ }));
+    const filters = screen.getByRole('group', { name: 'Filter payments' });
+    const updates = screen.getByRole('region', { name: 'Payment updates' });
+    expect(
+      await within(filters).findByRole('button', { name: 'Unresolved 2' }),
+    ).toBeInTheDocument();
+    await userEvent.click(await within(filters).findByRole('button', { name: 'Failed 1' }));
+    expect(within(updates).getAllByRole('heading')).toHaveLength(1);
+    expect(within(updates).getByText('Failed')).toBeInTheDocument();
+    const reads = lookup.mock.calls.filter(([key]) => key === 'pending-key').length;
+    await act(() =>
+      client.refetchQueries({ queryKey: queryKeys.payment('pending-key'), type: 'active' }),
+    );
+    expect(lookup.mock.calls.filter(([key]) => key === 'pending-key')).toHaveLength(reads + 1);
+    await userEvent.click(screen.getByRole('button', { name: 'Clear failed' }));
+    expect(await within(updates).findByText('No failed payments.')).toBeInTheDocument();
+    expect(within(filters).getByRole('button', { name: 'Failed 0' })).toBeEnabled();
+    expect(within(filters).getByRole('button', { name: 'Confirmed 1' })).toBeInTheDocument();
+    expect(localStorage.getItem('ths:faucet:1:ironwood:500000000')).toBe('pending-key');
+    expect(localStorage.getItem('ths:faucet:4:ironwood:500000000')).toBe('unknown-key');
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(screen.getByRole('button', { name: /View payments/ }));
+    expect(screen.getByRole('button', { name: 'All 3' })).toHaveAttribute('aria-pressed', 'true');
+    expect(
+      within(screen.getByRole('region', { name: 'Payment updates' })).getAllByRole('heading'),
+    ).toHaveLength(3);
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('keeps lookup errors unresolved and updates filter membership without losing focus', async () => {
+    mockWalletApis();
+    let payment = savedFaucet('live-key', 1, 'broadcast');
+    let readError = false;
+    vi.spyOn(api, 'payment').mockImplementation(() =>
+      readError ? Promise.reject(new Error('Connection lost')) : Promise.resolve(payment),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithWalletActions(<WalletPage />, client);
+    await userEvent.click(await screen.findByRole('button', { name: /View payments/ }));
+    const updates = screen.getByRole('region', { name: 'Payment updates' });
+    const selected = screen.getByRole('button', { name: 'Unresolved 1' });
+    await userEvent.click(selected);
+    const resume = await within(updates).findByRole('button', { name: 'Resume' });
+    resume.focus();
+    readError = true;
+    await act(() => client.refetchQueries({ queryKey: queryKeys.payment('live-key') }));
+    expect(await within(updates).findByText(/Couldn’t check status/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Failed 0' })).toBeInTheDocument();
+    expect(resume).toHaveFocus();
+    expect(localStorage.getItem('ths:faucet:1:ironwood:500000000')).toBe('live-key');
+    readError = false;
+    payment = { ...payment!, status: 'confirmed', txid: TXID };
+    await act(() => client.refetchQueries({ queryKey: queryKeys.payment('live-key') }));
+    expect(await within(updates).findByText('No unresolved payments.')).toBeInTheDocument();
+    await waitFor(() => expect(selected).toHaveFocus());
+    expect(selected).toHaveAccessibleName('Unresolved 0');
+    expect(selected).toHaveAttribute('aria-pressed', 'true');
+    expect(within(updates).queryByRole('heading')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirmed 1' })).toBeInTheDocument();
+    await waitFor(() => expect(localStorage.getItem('ths:faucet:1:ironwood:500000000')).toBeNull());
+    await userEvent.click(within(updates).getByRole('button', { name: 'Show all' }));
+    expect(within(updates).getByText('Confirmed')).toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
 
   it('tracks a late POST after closing its dialog and preserves a newly opened draft', async () => {
     vi.spyOn(api, 'accounts').mockResolvedValue(testAccounts);
