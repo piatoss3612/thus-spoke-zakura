@@ -281,9 +281,6 @@ export function PaymentStatus({
                     : identity.variables.memo}
               </p>
             )}
-            <p>
-              Request key: <span className="font-mono break-all">{identity.key}</span>
-            </p>
             {activity?.created_at && <p>Created: {activity.created_at}</p>}
             {failed && (
               <p>Adding funds won’t restart this payment. Start a new one to try again.</p>
@@ -292,7 +289,7 @@ export function PaymentStatus({
         </details>
         {!terminal && !inFlight && (
           <p id={recoveryId} className="sr-only">
-            Resume uses the saved request and key.
+            Resume continues this saved payment.
           </p>
         )}
         <div className="flex flex-wrap justify-end gap-2">
