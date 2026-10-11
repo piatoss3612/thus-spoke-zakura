@@ -98,7 +98,7 @@ export function PaymentStatus({
       } else {
         toast.error(
           'Payment failed',
-          activity?.last_error ?? 'The server marked this payment as failed.',
+          `${formatZecAmount(variables.amount_zatoshi)} to Account ${destination}. ${activity?.last_error ?? 'Check payment details.'}`,
           { label: 'View payment', onClick: onView },
         );
       }

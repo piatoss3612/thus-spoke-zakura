@@ -11,6 +11,7 @@ import { useRetainedPayments, type PaymentIdentity } from '@/hooks/payment-ident
 import { WalletPaymentsContext } from './payment-context';
 import { useToast } from '@/components/ui/toast-context';
 import { errorMessage, isPaymentRejection } from '@/lib/api';
+import { formatZecAmount } from '@/lib/money';
 
 type OpenDialog = 'send' | 'faucet' | 'mine' | null;
 
@@ -38,10 +39,11 @@ export function WalletActionsProvider({ children }: { children: ReactNode }) {
     onRejected: (identity: PaymentIdentity) => {
       (identity.kind === 'send' ? savedSend : savedFaucet).dismissKey(identity.key);
     },
-    onError: (error: Error, key: string | undefined) => {
+    onError: (error: Error, variables: PaymentIdentity['variables'], key: string | undefined) => {
+      const destination = 'to_account' in variables ? variables.to_account : variables.account_id;
       toast.error(
         isPaymentRejection(error) ? 'Payment rejected' : 'Payment not confirmed',
-        errorMessage(error),
+        `${formatZecAmount(variables.amount_zatoshi)} to Account ${destination}. ${errorMessage(error)}`,
         key ? { label: 'View payment', onClick: () => viewPayment(key) } : undefined,
       );
     },

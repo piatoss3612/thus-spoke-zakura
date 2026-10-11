@@ -551,7 +551,8 @@ describe('SendDialog', () => {
     offline = false;
     payment = { ...PENDING, status: 'failed', last_error: 'Insufficient funds' };
     await userEvent.click(screen.getByRole('button', { name: 'Resume' }));
-    expect(await screen.findAllByText('Insufficient funds')).toHaveLength(2);
+    expect(await screen.findByText('Insufficient funds')).toBeInTheDocument();
+    expect(screen.getByText('1 ZEC to Account 2. Insufficient funds')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Unresolved 0' }));
     expect(
       within(screen.getByRole('region', { name: 'Payment updates' })).getByText(
@@ -614,7 +615,10 @@ describe('SendDialog', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Resume payment' }));
     await waitFor(() => expect(sendCalls(fetchMock)).toHaveLength(1));
     expect(await screen.findByText('Payment not confirmed')).toBeInTheDocument();
-    expect(await screen.findAllByText('Resume connection lost')).toHaveLength(2);
+    expect(await screen.findByText('Resume connection lost')).toBeInTheDocument();
+    expect(
+      screen.getByText('2.67500001 ZEC to Account 4. Resume connection lost'),
+    ).toBeInTheDocument();
     expect(localStorage.getItem('ths:send:retained:original-legacy-key')).toBe(name);
     rejectResume = false;
     await userEvent.click(await screen.findByRole('button', { name: 'Resume payment' }));
