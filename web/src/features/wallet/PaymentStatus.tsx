@@ -63,6 +63,7 @@ export function PaymentStatus({
   const recoveryFocused = useRef(false);
   const focusedRequest = useRef<object | null>(null);
   const handled = useRef(false);
+  const observedUnresolved = useRef(false);
   const mounted = useRef(true);
   const [cleanupError, setCleanupError] = useState<string | null>(null);
   const [checkingCleanup, setCheckingCleanup] = useState(false);
@@ -81,9 +82,12 @@ export function PaymentStatus({
     };
   }, []);
   useEffect(() => {
+    // Suppress outcomes already terminal at restoration, not new completions
+    // after this session has observed an unresolved payment.
+    if (status.isSuccess && !terminal) observedUnresolved.current = true;
     if (!terminal || handled.current) return;
     handled.current = true;
-    if (!restored && claimAnnouncement(identity.key)) {
+    if ((!restored || observedUnresolved.current) && claimAnnouncement(identity.key)) {
       if (confirmed) {
         toast.success(
           identity.kind === 'send'
@@ -104,6 +108,7 @@ export function PaymentStatus({
     });
   }, [
     terminal,
+    status.isSuccess,
     restored,
     confirmed,
     activity,
