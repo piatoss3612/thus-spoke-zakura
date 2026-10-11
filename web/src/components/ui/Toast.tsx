@@ -63,11 +63,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 </RadixToast.Description>
               )}
               {message.action && (
-                <RadixToast.Action altText={message.action.label} asChild>
-                  <Button size="sm" className="mt-2" onClick={message.action.onClick}>
-                    {message.action.label}
-                  </Button>
-                </RadixToast.Action>
+                <div className="mt-2 flex justify-end">
+                  <RadixToast.Action altText={message.action.label} asChild>
+                    <Button size="sm" onClick={message.action.onClick}>
+                      {message.action.label}
+                    </Button>
+                  </RadixToast.Action>
+                </div>
               )}
             </div>
             {message.action && (
