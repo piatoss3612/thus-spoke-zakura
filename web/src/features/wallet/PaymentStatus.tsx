@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronRight,
   Clock3,
   HelpCircle,
   Loader2,
@@ -55,6 +56,7 @@ export function PaymentStatus({
   const toast = useToast();
   const titleId = useId();
   const recoveryId = useId();
+  const detailsId = useId();
   const heading = useRef<HTMLHeadingElement>(null);
   const article = useRef<HTMLElement>(null);
   const focused = useRef(false);
@@ -64,6 +66,7 @@ export function PaymentStatus({
   const mounted = useRef(true);
   const [cleanupError, setCleanupError] = useState<string | null>(null);
   const [checkingCleanup, setCheckingCleanup] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const terminal = isTerminalPayment(activity);
   const confirmed = activity?.status === 'confirmed';
   const failed = activity?.status === 'failed';
@@ -258,41 +261,27 @@ export function PaymentStatus({
           <p>Allow site storage, then check again.</p>
         </PaymentWarning>
       )}
-      <div className="mt-2 flex flex-wrap items-end justify-between gap-2">
-        <details className="text-ink-muted min-w-20 flex-1 open:basis-full">
-          <summary aria-describedby={titleId} className="w-fit cursor-pointer">
-            Details
-          </summary>
-          <div className="mt-2 space-y-1">
-            {restored && <p>Previous payment</p>}
-            <p>
-              Pool route:{' '}
-              {identity.kind === 'send'
-                ? `${identity.variables.source_pool} → ${identity.variables.destination_pool}`
-                : identity.variables.pool}
-            </p>
-            {identity.kind === 'send' && (
-              <p>
-                Memo:{' '}
-                {identity.variables.memo === undefined
-                  ? 'None'
-                  : identity.variables.memo === ''
-                    ? '(empty)'
-                    : identity.variables.memo}
-              </p>
-            )}
-            {activity?.created_at && <p>Created: {activity.created_at}</p>}
-            {failed && (
-              <p>Adding funds won’t restart this payment. Start a new one to try again.</p>
-            )}
-          </div>
-        </details>
+      <div className="mt-2 flex items-start gap-2">
+        <button
+          type="button"
+          aria-expanded={detailsOpen}
+          aria-controls={detailsId}
+          aria-describedby={titleId}
+          className="text-ink-muted hover:text-ink inline-flex min-h-9 shrink-0 cursor-pointer items-center gap-1"
+          onClick={() => setDetailsOpen((open) => !open)}
+        >
+          <ChevronRight
+            aria-hidden
+            className={cn('size-3', detailsOpen ? 'rotate-90' : 'rtl:rotate-180')}
+          />
+          Details
+        </button>
         {!terminal && !inFlight && (
           <p id={recoveryId} className="sr-only">
             Resume continues this saved payment.
           </p>
         )}
-        <div className="flex flex-wrap justify-end gap-2">
+        <div className="flex min-w-0 flex-1 flex-wrap justify-end gap-2">
           {!terminal && !inFlight && !status.isPending && (
             <Button
               type="button"
@@ -344,6 +333,27 @@ export function PaymentStatus({
               </Button>
             ))}
         </div>
+      </div>
+      <div id={detailsId} hidden={!detailsOpen} className="text-ink-muted mt-2 space-y-1">
+        {restored && <p>Previous payment</p>}
+        <p>
+          Pool route:{' '}
+          {identity.kind === 'send'
+            ? `${identity.variables.source_pool} → ${identity.variables.destination_pool}`
+            : identity.variables.pool}
+        </p>
+        {identity.kind === 'send' && (
+          <p>
+            Memo:{' '}
+            {identity.variables.memo === undefined
+              ? 'None'
+              : identity.variables.memo === ''
+                ? '(empty)'
+                : identity.variables.memo}
+          </p>
+        )}
+        {activity?.created_at && <p>Created: {activity.created_at}</p>}
+        {failed && <p>Adding funds won’t restart this payment. Start a new one to try again.</p>}
       </div>
     </article>,
     container,
