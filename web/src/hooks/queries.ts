@@ -54,6 +54,8 @@ export function usePaymentStatus(key: string, enabled: boolean) {
     retry: false,
     staleTime: 0,
     refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
     refetchInterval: (query) => (isTerminalPayment(query.state.data) ? false : 2_000),
   });
 }
