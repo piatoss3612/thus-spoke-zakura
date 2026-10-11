@@ -12,7 +12,6 @@ import {
 } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
-import { statusTone } from '@/components/ui/status-tone';
 import { useToast } from '@/components/ui/toast-context';
 import { usePaymentStatus, isTerminalPayment } from '@/hooks/queries';
 import type { PaymentIdentity } from '@/hooks/payment-identity';
@@ -142,35 +141,33 @@ export function PaymentStatus({
       if (mounted.current) setCheckingCleanup(false);
     }
   };
-  const stage =
-    activity?.status ??
-    (inFlight
-      ? 'submitting'
-      : status.isPending
-        ? 'checking'
-        : status.isError
-          ? 'status unavailable'
-          : 'unknown');
+  const checking = !activity && status.isPending && status.isFetching;
+  const label = confirmed
+    ? 'Confirmed'
+    : failed
+      ? 'Failed'
+      : inFlight
+        ? 'Submitting'
+        : activity
+          ? 'Pending'
+          : checking
+            ? 'Checking'
+            : 'Unknown';
   const StatusIcon = confirmed
     ? CheckCircle2
     : failed
       ? XCircle
-      : inFlight || status.isPending
+      : inFlight || checking
         ? Loader2
         : activity
           ? Clock3
           : HelpCircle;
-  const labels: Record<string, string> = {
-    preparing: 'Preparing',
-    prepared: 'Ready',
-    broadcast: 'Confirming',
-    confirmed: 'Confirmed',
-    failed: 'Failed',
-    submitting: 'Submitting',
-    checking: 'Checking',
-    'status unavailable': 'Status unavailable',
-    unknown: 'Unknown',
+  const phases: Record<string, string> = {
+    preparing: 'Preparing payment',
+    prepared: 'Ready to broadcast',
+    broadcast: 'Waiting for confirmation',
   };
+  const phase = activity && !terminal ? phases[activity.status] : undefined;
 
   // Polling and terminal cleanup outlive the on-demand panel. Only the view
   // is portalled into its scroll area, so closing it cannot interrupt recovery.
@@ -193,27 +190,26 @@ export function PaymentStatus({
         }
       }}
     >
-      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
-        <div className="min-w-[min(100%,180px)] flex-1">
-          <h3 id={titleId} ref={heading} tabIndex={-1} className="font-semibold">
-            {identity.kind === 'send'
-              ? `Account ${identity.variables.from_account} → `
-              : 'Faucet → '}
-            Account {destination} · {formatZecAmount(variables.amount_zatoshi)}
-          </h3>
-        </div>
-        <span role="status">
-          <Badge tone={statusTone(stage)} className="gap-1">
-            <StatusIcon
-              className={cn(
-                'size-3 shrink-0',
-                StatusIcon === Loader2 && 'motion-safe:animate-spin',
-              )}
-              aria-hidden
-            />
-            {labels[stage] ?? stage}
-          </Badge>
-        </span>
+      <h3 id={titleId} ref={heading} tabIndex={-1} className="font-semibold">
+        {identity.kind === 'send' ? `Account ${identity.variables.from_account} → ` : 'Faucet → '}
+        Account {destination} · {formatZecAmount(variables.amount_zatoshi)}
+      </h3>
+      <div role="status" className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+        <Badge
+          tone={confirmed ? 'positive' : failed ? 'negative' : 'neutral'}
+          className="gap-1.5 text-[12px] font-medium tracking-normal normal-case"
+        >
+          <StatusIcon
+            className={cn('size-3 shrink-0', StatusIcon === Loader2 && 'motion-safe:animate-spin')}
+            aria-hidden
+          />
+          {label}
+        </Badge>
+        {phase && (
+          <span className="text-ink-muted">
+            {status.isError || inFlight ? `Last known: ${phase}` : phase}
+          </span>
+        )}
       </div>
       {failed && (
         <p className="text-negative mt-2">
@@ -271,12 +267,6 @@ export function PaymentStatus({
             <p>
               Request key: <span className="font-mono break-all">{identity.key}</span>
             </p>
-            {activity && !failed && (
-              <p>
-                Stages: Preparing → Ready → Confirming → Confirmed. Current:{' '}
-                {labels[activity.status]}.
-              </p>
-            )}
             {activity?.created_at && <p>Created: {activity.created_at}</p>}
             {failed && (
               <p>Adding funds won’t restart this payment. Start a new one to try again.</p>

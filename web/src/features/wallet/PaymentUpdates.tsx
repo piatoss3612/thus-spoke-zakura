@@ -160,7 +160,7 @@ export function PaymentUpdates() {
           <div
             role="group"
             aria-label="Filter payments"
-            className="xp-sunken bg-sunken mb-3 grid shrink-0 grid-cols-2 gap-0.5 rounded-xs p-0.5 sm:grid-cols-4"
+            className="mb-3 grid shrink-0 grid-cols-2 gap-1.5 sm:grid-cols-4"
           >
             {FILTERS.map((value) => (
               <button
@@ -173,13 +173,23 @@ export function PaymentUpdates() {
                   if (container) container.scrollTop = 0;
                 }}
                 className={cn(
-                  'min-h-8 cursor-pointer rounded-xs px-2.5 py-1.5 text-[12px] whitespace-nowrap',
+                  'rounded-control flex min-h-9 cursor-pointer items-center justify-between gap-1.5 border px-2.5 py-1.5 text-[12px] whitespace-nowrap',
                   value === selected
-                    ? 'xp-raised bg-raised text-accent-strong'
-                    : 'text-ink-muted hover:text-ink',
+                    ? 'border-accent-strong bg-accent-soft text-accent-strong font-semibold'
+                    : 'border-line bg-panel text-ink-muted hover:border-line-strong hover:bg-raised hover:text-ink',
                 )}
               >
-                {LABELS[value]} <span className="tabular-nums">{counts[value]}</span>
+                {LABELS[value]}{' '}
+                <span
+                  className={cn(
+                    'min-w-5 rounded-xs px-1 text-center text-[11px] leading-5 tabular-nums',
+                    value === selected
+                      ? 'bg-accent-strong text-accent-ink'
+                      : 'bg-raised text-ink-muted',
+                  )}
+                >
+                  {counts[value]}
+                </span>
               </button>
             ))}
           </div>
@@ -196,9 +206,9 @@ export function PaymentUpdates() {
           ref={setContainer}
           role="region"
           aria-label="Payment updates"
-          tabIndex={-1}
+          tabIndex={0}
           className={cn(
-            'border-line relative max-h-[min(55dvh,440px)] min-h-0 overflow-y-auto overscroll-contain rounded-xs',
+            'payment-scroll-area border-line relative max-h-[min(55dvh,440px)] min-h-0 overflow-y-auto overscroll-contain rounded-xs focus-visible:-outline-offset-2',
             (visible.length > 0 || errors.length > 0) && 'border',
           )}
         >
