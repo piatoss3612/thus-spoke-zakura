@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, type Activity } from '@/lib/api';
 import { useFaucet, useSend } from './mutations';
 import { usePaymentStatus } from './queries';
+import { useRetainedPayments } from './payment-identity';
 
 const request = { account_id: 1, pool: 'ironwood' as const, amount_zatoshi: 100_000_000n };
 const testLocks = Object.getOwnPropertyDescriptor(navigator, 'locks')!;
@@ -315,6 +316,49 @@ describe.each(['faucet', 'send'] as const)('%s operation ownership', (kind) => {
     });
     expect(post).not.toHaveBeenCalled();
     expect(localStorage.getItem(storageKey)).toBeNull();
+    hook.unmount();
+
+    if (unavailable === 'storage') {
+      vi.restoreAllMocks();
+      const setLocalItem = localStorage.setItem.bind(localStorage);
+      for (const existingKey of [null, 'existing-payment']) {
+        localStorage.clear();
+        sessionStorage.clear();
+        if (existingKey) {
+          localStorage.setItem(storageKey, existingKey);
+          localStorage.setItem(`ths:${kind}:retained:${existingKey}`, storageKey);
+        }
+        const before = { ...localStorage };
+        const storage = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+          this: Storage,
+          item,
+          value,
+        ) {
+          if (this === sessionStorage)
+            throw new DOMException('Tab storage blocked', 'SecurityError');
+          setLocalItem(item, value);
+        });
+        const submit = vi.spyOn(api, kind);
+        const failed = tab();
+        await act(async () => {
+          await expect(failed.result.current.submit()).rejects.toThrow('Tab storage blocked');
+        });
+        expect(submit).not.toHaveBeenCalled();
+        expect({ ...localStorage }).toEqual(before);
+        expect(sessionStorage.length).toBe(0);
+        failed.unmount();
+        storage.mockRestore();
+        submit.mockRestore();
+
+        const restored = renderHook(() => useRetainedPayments(kind));
+        await waitFor(() =>
+          expect(restored.result.current.retained.map((identity) => identity.key)).toEqual(
+            existingKey ? [existingKey] : [],
+          ),
+        );
+        restored.unmount();
+      }
+    }
   });
 });
 

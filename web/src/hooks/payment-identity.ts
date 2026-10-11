@@ -63,17 +63,44 @@ export async function retainPayment(
     const key = expectedKey ?? retainedPaymentKey(name, owned) ?? idempotencyKey();
     // The record survives a browser restart even if a newer shared key exists.
     // Complete every persistence step before allowing a payment POST.
-    localStorage.setItem(recordName(kind, key), name);
-    if (!localStorage.getItem(name)) localStorage.setItem(name, key);
-    sessionStorage.setItem(`${name}:tab`, key);
-    if (
-      localStorage.getItem(recordName(kind, key)) !== name ||
-      !localStorage.getItem(name) ||
-      sessionStorage.getItem(`${name}:tab`) !== key
-    ) {
-      throw new Error('Could not retain the payment identity. No payment was submitted.');
+    const writes: [Storage, string, string | null][] = [];
+    const write = (storage: Storage, item: string, value: string) => {
+      const previous = storage.getItem(item);
+      if (previous === value) return;
+      storage.setItem(item, value);
+      writes.push([storage, item, previous]);
+    };
+    try {
+      write(localStorage, recordName(kind, key), name);
+      if (!localStorage.getItem(name)) write(localStorage, name, key);
+      write(sessionStorage, `${name}:tab`, key);
+      if (
+        localStorage.getItem(recordName(kind, key)) !== name ||
+        !localStorage.getItem(name) ||
+        sessionStorage.getItem(`${name}:tab`) !== key
+      ) {
+        throw new Error('Could not retain the payment identity. No payment was submitted.');
+      }
+      sessionStorage.removeItem(name);
+    } catch (error) {
+      // A failed attempt must not become a resumable payment after reload.
+      const errors = [error];
+      for (const [storage, item, previous] of writes.reverse()) {
+        try {
+          if (previous === null) storage.removeItem(item);
+          else storage.setItem(item, previous);
+        } catch (rollbackError) {
+          errors.push(rollbackError);
+        }
+      }
+      if (errors.length > 1)
+        throw new AggregateError(
+          errors,
+          'Could not restore payment storage. No payment was submitted.',
+          { cause: error },
+        );
+      throw error;
     }
-    sessionStorage.removeItem(name);
     owned.set(name, key);
     window.dispatchEvent(new Event(changed));
     return { kind, name, key, variables } as PaymentIdentity;
