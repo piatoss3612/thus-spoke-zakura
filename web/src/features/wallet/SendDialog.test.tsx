@@ -573,7 +573,7 @@ describe('SendDialog', () => {
     expect(requestBody(sendCalls(fetchMock)[2]?.[1]).idempotency_key).not.toBe(originalKey);
   });
 
-  it('migrates non-default session details without POST and restores their exact request after restart', async () => {
+  it('migrates non-default session details and resumes an empty-memo request from the form', async () => {
     const name = 'ths:send:[3,4,"transparent","ironwood","267500001",""]';
     sessionStorage.setItem(name, 'original-legacy-key');
     let rejectResume = true;
@@ -600,15 +600,24 @@ describe('SendDialog', () => {
     expect(localStorage.getItem('ths:send:retained:original-legacy-key')).toBe(name);
     first.unmount();
     sessionStorage.clear();
-    renderWithProviders(<></>);
-    await userEvent.click(await screen.findByRole('button', { name: /View payments/ }));
-    await userEvent.click(await screen.findByRole('button', { name: 'Resume' }));
+    localStorage.removeItem(name);
+    const close = vi.fn();
+    renderWithProviders(
+      <SendDialog open onOpenChange={close} accounts={testAccounts} defaultAccountId={3} />,
+    );
+    await selectTransferField('Destination account', 'Account 4');
+    await selectTransferField('Source pool', 'Transparent (public)');
+    await userEvent.clear(screen.getByLabelText('Amount (ZEC)'));
+    await userEvent.type(screen.getByLabelText('Amount (ZEC)'), '2.67500001');
+    expect(screen.getByLabelText('Memo (optional)')).toHaveValue('');
+    expect(sendCalls(fetchMock)).toHaveLength(0);
+    await userEvent.click(await screen.findByRole('button', { name: 'Resume payment' }));
     await waitFor(() => expect(sendCalls(fetchMock)).toHaveLength(1));
     expect(await screen.findByText('Payment not confirmed')).toBeInTheDocument();
-    expect(screen.getByText('Resume connection lost')).toBeInTheDocument();
+    expect(await screen.findAllByText('Resume connection lost')).toHaveLength(2);
     expect(localStorage.getItem('ths:send:retained:original-legacy-key')).toBe(name);
     rejectResume = false;
-    await userEvent.click(await screen.findByRole('button', { name: 'Resume' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Resume payment' }));
     await waitFor(() => expect(sendCalls(fetchMock)).toHaveLength(2));
     expect(requestBody(sendCalls(fetchMock)[1]?.[1])).toEqual(body(fetchMock));
     expect(body(fetchMock)).toEqual({
@@ -620,6 +629,7 @@ describe('SendDialog', () => {
       memo: '',
       idempotency_key: 'original-legacy-key',
     });
+    await waitFor(() => expect(close).toHaveBeenCalledWith(false));
   });
 
   it('posts the memo with the send', async () => {
