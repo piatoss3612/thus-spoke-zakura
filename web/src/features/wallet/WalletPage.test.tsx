@@ -256,6 +256,9 @@ describe('WalletPage', () => {
       expect(screen.getByRole('button', { name: `${label} 1` })).toBeInTheDocument();
       const announcement = outcome === 'confirmed' ? 'Funded Account 1' : 'Payment failed';
       expect(screen.getAllByText(announcement, { exact: true })).toHaveLength(1);
+      if (outcome === 'failed') {
+        expect(screen.getByText('5 ZEC to Account 1. Insufficient funds')).toBeInTheDocument();
+      }
       await waitFor(() => {
         const liveAnnouncement = Array.from(
           document.querySelectorAll('[role="status"][aria-live]'),
@@ -388,6 +391,9 @@ describe('WalletPage', () => {
         await response.catch(() => undefined);
       });
       expect(await screen.findByText('Payment not confirmed')).toBeInTheDocument();
+      expect(
+        screen.getByText(`1 ZEC to Account ${kind === 'send' ? 2 : 1}. Connection lost`),
+      ).toBeInTheDocument();
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
       await userEvent.click(screen.getByRole('button', { name: 'View payment' }));
       const updates = screen.getByRole('region', { name: 'Payment updates' });

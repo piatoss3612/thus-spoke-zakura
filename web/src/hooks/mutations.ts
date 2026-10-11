@@ -70,7 +70,11 @@ type PaymentCallbacks<T> = {
 type PaymentLifecycle = {
   onRetained: (identity: PaymentIdentity) => void;
   onRejected: (identity: PaymentIdentity) => void;
-  onError: (error: Error, key: string | undefined) => void;
+  onError: (
+    error: Error,
+    variables: SendVariables | FaucetVariables,
+    key: string | undefined,
+  ) => void;
 };
 
 function usePaymentMutation<T extends SendVariables | FaucetVariables>(
@@ -125,7 +129,7 @@ function usePaymentMutation<T extends SendVariables | FaucetVariables>(
       }
     },
     retry: false,
-    onError: (error, submission) => lifecycle?.onError(error, submission.key),
+    onError: (error, submission) => lifecycle?.onError(error, submission.variables, submission.key),
     onSuccess: async (result, { variables }) => {
       const { activity, key } = result;
       // A lookup started before acceptance must not overwrite this response.
