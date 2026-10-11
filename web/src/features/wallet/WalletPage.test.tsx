@@ -144,7 +144,7 @@ describe('WalletPage', () => {
       const updates = await screen.findByRole('region', { name: 'Payment updates' });
       expect(
         await within(updates).findByText(
-          status === 'broadcast' ? 'Confirming' : status === 'confirmed' ? 'Confirmed' : 'Failed',
+          status === 'broadcast' ? 'Pending' : status === 'confirmed' ? 'Confirmed' : 'Failed',
         ),
       ).toBeInTheDocument();
       expect(screen.queryByText('Funded Account 1')).not.toBeInTheDocument();
@@ -155,6 +155,7 @@ describe('WalletPage', () => {
           .mock.calls.some(([input]) => requestUrl(input).includes(`idempotency_key=${key}`)),
       ).toBe(true);
       if (status === 'broadcast') {
+        expect(within(updates).getByText('Waiting for confirmation')).toBeInTheDocument();
         expect(localStorage.getItem(name)).toBe(key);
         expect(within(updates).getByRole('button', { name: 'Resume' })).toBeInTheDocument();
       } else {
@@ -187,6 +188,8 @@ describe('WalletPage', () => {
     expect(
       await within(filters).findByRole('button', { name: 'Unresolved 2' }),
     ).toBeInTheDocument();
+    expect(await within(updates).findByText('Pending')).toBeInTheDocument();
+    expect(await within(updates).findByText('Unknown')).toBeInTheDocument();
     await userEvent.click(await within(filters).findByRole('button', { name: 'Failed 1' }));
     expect(within(updates).getAllByRole('heading')).toHaveLength(1);
     expect(within(updates).getByText('Failed')).toBeInTheDocument();
@@ -228,6 +231,8 @@ describe('WalletPage', () => {
     readError = true;
     await act(() => client.refetchQueries({ queryKey: queryKeys.payment('live-key') }));
     expect(await within(updates).findByText(/Couldn’t check status/)).toBeInTheDocument();
+    expect(within(updates).getByText('Pending')).toBeInTheDocument();
+    expect(within(updates).getByText('Last known: Waiting for confirmation')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Failed 0' })).toBeInTheDocument();
     expect(resume).toHaveFocus();
     expect(localStorage.getItem('ths:faucet:1:ironwood:500000000')).toBe('live-key');
