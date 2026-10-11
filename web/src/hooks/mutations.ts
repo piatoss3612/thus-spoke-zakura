@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
 import {
   api,
@@ -67,14 +67,20 @@ type PaymentCallbacks<T> = {
   onError?: (error: Error, variables: T) => void;
   onSuccess?: (result: PaymentResult, variables: T) => void;
 };
+type PaymentLifecycle = {
+  onRetained: (identity: PaymentIdentity) => void;
+  onRejected: (identity: PaymentIdentity) => void;
+};
 
 function usePaymentMutation<T extends SendVariables | FaucetVariables>(
   kind: PaymentKind,
   post: (variables: T, key: string) => Promise<Activity>,
+  lifecycle?: PaymentLifecycle,
 ) {
   const queryClient = useQueryClient();
   const invalidate = useInvalidateWallet();
   const ownedKeys = useRef(new Map<string, string>());
+  const [pendingKey, setPendingKey] = useState<string | null>(null);
   const clear = useCallback(
     async (identity: PaymentIdentity) => {
       try {
@@ -98,6 +104,9 @@ function usePaymentMutation<T extends SendVariables | FaucetVariables>(
       if ('error' in submission) throw submission.error;
       const { variables, key } = submission;
       const identity = await retainPayment(kind, variables, ownedKeys.current, key);
+      setPendingKey(identity.key);
+      // Publish before POST: an immediate terminal response can release storage.
+      lifecycle?.onRetained(identity);
       try {
         const activity = await post(variables, identity.key);
         return { activity, key: identity.key };
@@ -107,6 +116,7 @@ function usePaymentMutation<T extends SendVariables | FaucetVariables>(
         // a lookup failure must leave the identity available for recovery.
         if (isPaymentRejection(error) && !(await api.payment(identity.key))) {
           await clearPayment(identity, ownedKeys.current);
+          lifecycle?.onRejected(identity);
         }
         throw error;
       }
@@ -126,8 +136,8 @@ function usePaymentMutation<T extends SendVariables | FaucetVariables>(
             ownedKeys.current,
           );
         } catch (error) {
-          // Cleanup cannot change the server's outcome. Keep the dialog open
-          // so its status card can show the warning and recover on reopening.
+          // Cleanup cannot change the outcome; the persistent status view
+          // keeps the result and offers a storage-only recovery action.
           result.cleanupError = errorMessage(error);
         }
       }
@@ -159,6 +169,7 @@ function usePaymentMutation<T extends SendVariables | FaucetVariables>(
       options?.onSuccess?.(result, variables),
   });
   const resume = (identity: PaymentIdentity, options?: PaymentCallbacks<T>) => {
+    setPendingKey(null);
     mutation.mutate(submission(identity.variables as T, identity.key), callbacks(options));
   };
   return {
@@ -171,21 +182,31 @@ function usePaymentMutation<T extends SendVariables | FaucetVariables>(
       mutation.isPending && mutation.variables
         ? paymentName(kind, mutation.variables.variables)
         : null,
-    mutate: (variables: T, options?: PaymentCallbacks<T>) =>
-      mutation.mutate(submission(variables), callbacks(options)),
-    mutateAsync: (variables: T) => mutation.mutateAsync(submission(variables)),
+    pendingKey: mutation.isPending ? pendingKey : null,
+    mutate: (variables: T, options?: PaymentCallbacks<T>) => {
+      setPendingKey(null);
+      mutation.mutate(submission(variables), callbacks(options));
+    },
+    mutateAsync: (variables: T) => {
+      setPendingKey(null);
+      return mutation.mutateAsync(submission(variables));
+    },
   };
 }
 
-export function useSend() {
-  return usePaymentMutation('send', (variables: SendVariables, key) =>
-    api.send({ ...variables, idempotency_key: key }),
+export function useSend(lifecycle?: PaymentLifecycle) {
+  return usePaymentMutation(
+    'send',
+    (variables: SendVariables, key) => api.send({ ...variables, idempotency_key: key }),
+    lifecycle,
   );
 }
 
-export function useFaucet() {
-  return usePaymentMutation('faucet', (variables: FaucetVariables, key) =>
-    api.faucet({ ...variables, idempotency_key: key }),
+export function useFaucet(lifecycle?: PaymentLifecycle) {
+  return usePaymentMutation(
+    'faucet',
+    (variables: FaucetVariables, key) => api.faucet({ ...variables, idempotency_key: key }),
+    lifecycle,
   );
 }
 
