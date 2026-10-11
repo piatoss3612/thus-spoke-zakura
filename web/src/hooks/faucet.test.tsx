@@ -66,7 +66,7 @@ afterEach(() => {
   Object.defineProperty(navigator, 'locks', testLocks);
 });
 
-describe.each(['faucet'] as const)('%s operation ownership', (kind) => {
+describe.each(['faucet', 'send'] as const)('%s operation ownership', (kind) => {
   const storageKey =
     kind === 'faucet'
       ? 'ths:faucet:1:ironwood:100000000'
