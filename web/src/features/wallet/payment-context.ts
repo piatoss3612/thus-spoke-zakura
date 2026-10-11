@@ -8,6 +8,9 @@ export interface WalletPaymentsApi {
   savedSend: ReturnType<typeof useRetainedPayments>;
   savedFaucet: ReturnType<typeof useRetainedPayments>;
   isRestored: (key: string) => boolean;
+  viewedPayment: { key: string | null } | null;
+  viewPayment: (key?: string) => void;
+  closePayments: () => void;
 }
 
 export const WalletPaymentsContext = createContext<WalletPaymentsApi | null>(null);

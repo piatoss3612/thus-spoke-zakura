@@ -1,6 +1,6 @@
 import * as RadixDialog from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
-import { useRef, type ReactNode } from 'react';
+import { useRef, type ReactNode, type RefObject } from 'react';
 import { cn } from '@/lib/cn';
 
 /**
@@ -16,6 +16,7 @@ export function Dialog({
   children,
   className,
   bodyClassName,
+  fallbackFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -25,6 +26,7 @@ export function Dialog({
   children: ReactNode;
   className?: string;
   bodyClassName?: string;
+  fallbackFocus?: RefObject<HTMLElement | null>;
 }) {
   const opener = useRef<HTMLElement | null>(null);
   return (
@@ -33,13 +35,19 @@ export function Dialog({
         <RadixDialog.Overlay className="bg-ink/35 animate-pop fixed inset-0 z-40" />
         <RadixDialog.Content
           onOpenAutoFocus={() => {
-            if (document.activeElement instanceof HTMLElement) {
-              opener.current = document.activeElement;
+            const active = document.activeElement;
+            if (active instanceof HTMLElement) {
+              // A notification action disappears on use. Prefer a stable
+              // opener, while preserving a form beneath a nested dialog.
+              opener.current = active.closest('[role="dialog"]')
+                ? active
+                : (fallbackFocus?.current ?? active);
             }
           }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             if (opener.current?.isConnected) opener.current.focus();
+            else fallbackFocus?.current?.focus();
           }}
           className={cn(
             'fixed top-1/2 left-1/2 z-50 w-[min(430px,calc(100vw-36px))] -translate-x-1/2 -translate-y-1/2',
