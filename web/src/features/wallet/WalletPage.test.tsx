@@ -148,6 +148,7 @@ describe('WalletPage', () => {
         ),
       ).toBeInTheDocument();
       expect(screen.queryByText('Funded Account 1')).not.toBeInTheDocument();
+      expect(screen.queryByText('Payment failed', { exact: true })).not.toBeInTheDocument();
       expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
       expect(
         vi
@@ -213,43 +214,58 @@ describe('WalletPage', () => {
     expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   });
 
-  it('keeps lookup errors unresolved and updates filter membership without losing focus', async () => {
-    mockWalletApis();
-    let payment = savedFaucet('live-key', 1, 'broadcast');
-    let readError = false;
-    vi.spyOn(api, 'payment').mockImplementation(() =>
-      readError ? Promise.reject(new Error('Connection lost')) : Promise.resolve(payment),
-    );
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    renderWithWalletActions(<WalletPage />, client);
-    await userEvent.click(await screen.findByRole('button', { name: /View payments/ }));
-    const updates = screen.getByRole('region', { name: 'Payment updates' });
-    const selected = screen.getByRole('button', { name: 'Unresolved 1' });
-    await userEvent.click(selected);
-    const resume = await within(updates).findByRole('button', { name: 'Resume' });
-    resume.focus();
-    readError = true;
-    await act(() => client.refetchQueries({ queryKey: queryKeys.payment('live-key') }));
-    expect(await within(updates).findByText(/Couldn’t check status/)).toBeInTheDocument();
-    expect(within(updates).getByText('Pending')).toBeInTheDocument();
-    expect(within(updates).getByText('Last known: Waiting for confirmation')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Failed 0' })).toBeInTheDocument();
-    expect(resume).toHaveFocus();
-    expect(localStorage.getItem('ths:faucet:1:ironwood:500000000')).toBe('live-key');
-    readError = false;
-    payment = { ...payment!, status: 'confirmed', txid: TXID };
-    await act(() => client.refetchQueries({ queryKey: queryKeys.payment('live-key') }));
-    expect(await within(updates).findByText('No unresolved payments.')).toBeInTheDocument();
-    await waitFor(() => expect(selected).toHaveFocus());
-    expect(selected).toHaveAccessibleName('Unresolved 0');
-    expect(selected).toHaveAttribute('aria-pressed', 'true');
-    expect(within(updates).queryByRole('heading')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Confirmed 1' })).toBeInTheDocument();
-    await waitFor(() => expect(localStorage.getItem('ths:faucet:1:ironwood:500000000')).toBeNull());
-    await userEvent.click(within(updates).getByRole('button', { name: 'Show all' }));
-    expect(within(updates).getByText('Confirmed')).toBeInTheDocument();
-    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
-  });
+  it.each(['confirmed', 'failed'] as const)(
+    'keeps lookup errors unresolved, announces restored %s once, and preserves filter focus',
+    async (outcome) => {
+      mockWalletApis();
+      let payment = savedFaucet('live-key', 1, 'broadcast');
+      let readError = false;
+      vi.spyOn(api, 'payment').mockImplementation(() =>
+        readError ? Promise.reject(new Error('Connection lost')) : Promise.resolve(payment),
+      );
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      renderWithWalletActions(<WalletPage />, client);
+      await userEvent.click(await screen.findByRole('button', { name: /View payments/ }));
+      const updates = screen.getByRole('region', { name: 'Payment updates' });
+      const selected = screen.getByRole('button', { name: 'Unresolved 1' });
+      await userEvent.click(selected);
+      const resume = await within(updates).findByRole('button', { name: 'Resume' });
+      resume.focus();
+      readError = true;
+      await act(() => client.refetchQueries({ queryKey: queryKeys.payment('live-key') }));
+      expect(await within(updates).findByText(/Couldn’t check status/)).toBeInTheDocument();
+      expect(within(updates).getByText('Pending')).toBeInTheDocument();
+      expect(within(updates).getByText('Last known: Waiting for confirmation')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Failed 0' })).toBeInTheDocument();
+      expect(resume).toHaveFocus();
+      expect(localStorage.getItem('ths:faucet:1:ironwood:500000000')).toBe('live-key');
+      readError = false;
+      payment = {
+        ...payment!,
+        status: outcome,
+        txid: outcome === 'confirmed' ? TXID : '',
+        last_error: outcome === 'failed' ? 'Insufficient funds' : null,
+      };
+      await act(() => client.refetchQueries({ queryKey: queryKeys.payment('live-key') }));
+      expect(await within(updates).findByText('No unresolved payments.')).toBeInTheDocument();
+      await waitFor(() => expect(selected).toHaveFocus());
+      expect(selected).toHaveAccessibleName('Unresolved 0');
+      expect(selected).toHaveAttribute('aria-pressed', 'true');
+      expect(within(updates).queryByRole('heading')).not.toBeInTheDocument();
+      const label = outcome === 'confirmed' ? 'Confirmed' : 'Failed';
+      expect(screen.getByRole('button', { name: `${label} 1` })).toBeInTheDocument();
+      const announcement = outcome === 'confirmed' ? 'Funded Account 1' : 'Payment failed';
+      expect(screen.getAllByText(announcement, { exact: true })).toHaveLength(1);
+      await waitFor(() =>
+        expect(localStorage.getItem('ths:faucet:1:ironwood:500000000')).toBeNull(),
+      );
+      await userEvent.click(within(updates).getByRole('button', { name: 'Show all' }));
+      expect(within(updates).getByText(label)).toBeInTheDocument();
+      await act(() => client.refetchQueries({ queryKey: queryKeys.payment('live-key') }));
+      expect(screen.getAllByText(announcement, { exact: true })).toHaveLength(1);
+      expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+    },
+  );
 
   it('tracks a late POST after closing its dialog and preserves a newly opened draft', async () => {
     vi.spyOn(api, 'accounts').mockResolvedValue(testAccounts);
