@@ -256,6 +256,18 @@ describe('WalletPage', () => {
       expect(screen.getByRole('button', { name: `${label} 1` })).toBeInTheDocument();
       const announcement = outcome === 'confirmed' ? 'Funded Account 1' : 'Payment failed';
       expect(screen.getAllByText(announcement, { exact: true })).toHaveLength(1);
+      await waitFor(() => {
+        const liveAnnouncement = Array.from(
+          document.querySelectorAll('[role="status"][aria-live]'),
+        ).find((element) => element.textContent?.includes(announcement));
+        expect(liveAnnouncement).toHaveAttribute(
+          'aria-live',
+          outcome === 'confirmed' ? 'polite' : 'assertive',
+        );
+      });
+      expect(
+        document.querySelector('li[data-state="open"] button[aria-label="Dismiss notification"]'),
+      ).not.toBeNull();
       await waitFor(() =>
         expect(localStorage.getItem('ths:faucet:1:ironwood:500000000')).toBeNull(),
       );

@@ -38,17 +38,19 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         {messages.map((message) => (
           <RadixToast.Root
             key={message.id}
+            type={message.tone === 'success' ? 'background' : 'foreground'}
             duration={message.action ? Infinity : message.tone === 'error' ? 10000 : 5000}
             onOpenChange={(open) => {
               if (!open) setMessages((current) => current.filter((m) => m.id !== message.id));
             }}
             className={cn(
-              'xp-raised animate-slide-in flex items-start gap-2.5 rounded-xs p-3 text-[12px] shadow-(--shadow-float)',
+              'xp-raised animate-slide-in flex shrink-0 items-start gap-2.5 rounded-xs p-3 text-[12px] shadow-(--shadow-float)',
               'data-[state=closed]:animate-out data-[state=closed]:fade-out',
               message.tone === 'success'
                 ? 'bg-positive-soft text-positive'
                 : 'bg-negative-soft text-negative',
             )}
+            style={{ touchAction: 'pan-y' }}
           >
             {message.tone === 'success' ? (
               <Check className="mt-px size-3.5 shrink-0" aria-hidden />
@@ -56,9 +58,19 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               <AlertTriangle className="mt-px size-3.5 shrink-0" aria-hidden />
             )}
             <div className="min-w-0 flex-1 wrap-anywhere">
-              <RadixToast.Title className="font-semibold">{message.title}</RadixToast.Title>
+              <div className="flex items-start gap-2.5">
+                <RadixToast.Title className="min-w-0 flex-1 font-semibold">
+                  {message.title}
+                </RadixToast.Title>
+                <RadixToast.Close
+                  aria-label="Dismiss notification"
+                  className="hover:bg-ink/5 grid size-6 shrink-0 cursor-pointer place-items-center rounded-xs"
+                >
+                  <X className="size-3.5" aria-hidden />
+                </RadixToast.Close>
+              </div>
               {message.detail && (
-                <RadixToast.Description className="mt-1 leading-relaxed opacity-90">
+                <RadixToast.Description className="mt-1 leading-relaxed">
                   {message.detail}
                 </RadixToast.Description>
               )}
@@ -72,17 +84,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 </div>
               )}
             </div>
-            {message.action && (
-              <RadixToast.Close
-                aria-label="Dismiss notification"
-                className="hover:bg-negative/10 grid size-6 shrink-0 cursor-pointer place-items-center rounded-xs"
-              >
-                <X className="size-3.5" aria-hidden />
-              </RadixToast.Close>
-            )}
           </RadixToast.Root>
         ))}
-        <RadixToast.Viewport className="fixed top-6 right-6 z-100 flex w-[min(380px,calc(100vw-48px))] flex-col gap-2 outline-none" />
+        <RadixToast.Viewport className="fixed top-5 right-5 z-100 flex max-h-[calc(100dvh-40px)] w-[min(388px,calc(100vw-40px))] flex-col gap-2 overflow-y-auto overscroll-contain p-1 outline-none" />
       </RadixToast.Provider>
     </ToastContext>
   );
