@@ -342,7 +342,7 @@ describe('WalletPage', () => {
   });
 
   it.each(['send', 'faucet'] as const)(
-    'links a late %s error to its saved payment without submitting again',
+    'links a late %s error and loads the selected failed payment',
     async (kind) => {
       Object.assign(Element.prototype, {
         scrollIntoView: vi.fn(),
@@ -368,7 +368,8 @@ describe('WalletPage', () => {
         reject = fail;
       });
       const post = vi.spyOn(api, kind).mockReturnValue(response);
-      renderWithWalletActions(<WalletPage />);
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      renderWithWalletActions(<WalletPage />, client);
       const trigger = await screen.findByRole('button', { name: /View payments/ });
       await userEvent.click(trigger);
       await userEvent.click(await screen.findByRole('button', { name: 'Failed 1' }));
@@ -408,6 +409,76 @@ describe('WalletPage', () => {
       expect(post).toHaveBeenCalledTimes(1);
       await userEvent.keyboard('{Escape}');
       await waitFor(() => expect(trigger).toHaveFocus());
+
+      await userEvent.click(
+        screen.getByRole('button', {
+          name: kind === 'send' ? 'Send from Account 1' : 'Fund Account 1',
+        }),
+      );
+      await userEvent.clear(screen.getByLabelText('Amount (ZEC)'));
+      await userEvent.type(screen.getByLabelText('Amount (ZEC)'), '2');
+      if (kind === 'send')
+        await userEvent.type(screen.getByLabelText('Memo (optional)'), 'Keep this draft');
+      await userEvent.click(
+        within(screen.getByRole('dialog')).getByRole('button', {
+          name: kind === 'send' ? 'Send ZEC' : 'Add funds',
+        }),
+      );
+      await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+      const viewFromDraft = await within(screen.getByRole('dialog')).findByRole('button', {
+        name: 'View payment',
+      });
+      payments.set(key, {
+        id: key,
+        kind,
+        from_account: kind === 'send' ? 1 : null,
+        to_account: kind === 'send' ? 2 : 1,
+        source_pool: 'ironwood',
+        destination_pool: 'ironwood',
+        amount_zatoshi: 100_000_000n,
+        txid: '',
+        block_hash: null,
+        status: 'failed',
+        last_error: 'Insufficient funds',
+        created_at: '2026-10-12 00:00:00',
+      });
+      await act(() => client.refetchQueries({ queryKey: queryKeys.payment(key) }));
+      expect(await screen.findByText('Payment failed', { exact: true })).toBeInTheDocument();
+      const underlying = screen.getByRole('dialog');
+      await userEvent.click(viewFromDraft);
+      // Inspecting a failure alone must not discard the underlying draft.
+      expect(within(underlying).getByLabelText('Amount (ZEC)')).toHaveValue('2');
+
+      // Each explicit new-payment request replaces the draft, including a
+      // second selection of the same failed identity for the same account.
+      for (let selection = 0; selection < 2; selection++) {
+        if (selection === 1) {
+          await userEvent.clear(screen.getByLabelText('Amount (ZEC)'));
+          await userEvent.type(screen.getByLabelText('Amount (ZEC)'), '3');
+          await userEvent.click(
+            within(screen.getByRole('dialog')).getByRole('button', {
+              name: kind === 'send' ? 'Send ZEC' : 'Add funds',
+            }),
+          );
+          await waitFor(() => expect(post).toHaveBeenCalledTimes(3));
+          await userEvent.click(
+            await within(screen.getByRole('dialog')).findByRole('button', {
+              name: 'View payment',
+            }),
+          );
+        }
+        const failedHeading = within(
+          screen.getByRole('region', { name: 'Payment updates' }),
+        ).getByRole('heading', { name: heading.textContent });
+        await userEvent.click(
+          within(failedHeading.closest('article')!).getByRole('button', {
+            name: kind === 'send' ? 'New Send' : 'Request funds',
+          }),
+        );
+        await waitFor(() => expect(screen.getByLabelText('Amount (ZEC)')).toHaveValue('1'));
+        if (kind === 'send') expect(screen.getByLabelText('Memo (optional)')).toHaveValue('');
+        expect(post).toHaveBeenCalledTimes(selection + 2);
+      }
     },
   );
 

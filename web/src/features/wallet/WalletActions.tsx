@@ -24,6 +24,7 @@ export function WalletActionsProvider({ children }: { children: ReactNode }) {
   const [viewedPayment, setViewedPayment] = useState<{ key: string | null } | null>(null);
   const viewPayment = (key?: string) => setViewedPayment({ key: key ?? null });
   const [dialog, setDialog] = useState<OpenDialog>(null);
+  const [formVersion, setFormVersion] = useState(0);
   const [faucetAccount, setFaucetAccount] = useState<number | undefined>(undefined);
   const [sendAccount, setSendAccount] = useState<number | undefined>(undefined);
   const [sendDraft, setSendDraft] = useState<PaymentIdentity | undefined>();
@@ -57,11 +58,13 @@ export function WalletActionsProvider({ children }: { children: ReactNode }) {
   const api = useMemo<WalletActionsApi>(
     () => ({
       openSend: (accountId, draft) => {
+        setFormVersion((version) => version + 1);
         setSendAccount(accountId);
         setSendDraft(draft);
         setDialog('send');
       },
       openFaucet: (accountId, draft) => {
+        setFormVersion((version) => version + 1);
         setFaucetAccount(accountId);
         setFaucetDraft(draft);
         setDialog('faucet');
@@ -101,10 +104,10 @@ export function WalletActionsProvider({ children }: { children: ReactNode }) {
             </Button>
           </section>
         )}
-        {/* Keyed so each dialog remounts with fresh defaults per open. */}
+        {/* An explicit open replaces the form even for the same account/draft. */}
         {dialog === 'send' && (
           <SendDialog
-            key={`send-${sendAccount ?? 'any'}`}
+            key={formVersion}
             open
             onOpenChange={close}
             accounts={accounts}
@@ -114,7 +117,7 @@ export function WalletActionsProvider({ children }: { children: ReactNode }) {
         )}
         {dialog === 'faucet' && (
           <FaucetDialog
-            key={`faucet-${faucetAccount ?? 'any'}`}
+            key={formVersion}
             open
             onOpenChange={close}
             accounts={accounts}
